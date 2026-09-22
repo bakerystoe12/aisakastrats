@@ -29,8 +29,40 @@ SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
 PORTAL_CHANCE = 0.4             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
+MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
+
+SPLIT_ROOM_MULTIPLIER = 2  # a split needs room for two independent bodies, not
+                            # one, so require more open space than plain
+                            # movement (tier 2) does before committing to it
 
 # ---------- helpers ----------
+
+def has_room_to_split():
+    """Flood-fills the open space around us (kelp and other dragons both
+    block it, same as room() does for movement) and refuses to split if
+    it's too walled-in to comfortably hold both the parent and the new
+    child afterward - a tight, kelp-choked pocket is exactly where two
+    independent bodies end up ramming each other."""
+    here = ct.get_position()
+    needed = ct.get_length() * SPLIT_ROOM_MULTIPLIER
+    return room(here, here, needed) >= needed
+
+def nearby_ally_count(others, radius=3):
+    """How many distinct ally dragons (besides us) have any visible segment
+    within `radius` tiles of our head. Counts dragons, not segments, so one
+    long ally snake doesn't get double-weighted against a short one."""
+    here = ct.get_position()
+    my_team = ct.get_team()
+    seen_ids = set()
+    for part in others:
+        if part.get_team() != my_team:
+            continue
+        if part.get_id() in seen_ids:
+            continue
+        if dist(here, part.get_position()) <= radius:
+            seen_ids.add(part.get_id())
+    return len(seen_ids)
+
 
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around."""
@@ -237,10 +269,14 @@ def choose_direction(others):
     return min(moves, key=key)
 
 
-def try_split():
+def try_split(others):
     """Aggressive dragons split as soon as they're long enough. Safe dragons
     never split, to keep their body intact for evasive pathfinding."""
     if not AGGRESSIVE or ct.get_length() < SPLIT_MIN_LENGTH:
+        return False
+    if nearby_ally_count(others) > MAX_NEARBY_ALLIES_TO_SPLIT:
+        return False
+    if not has_room_to_split():
         return False
     if ct.get_length() % 2 == 0:
         child = ct.get_length() // 2
@@ -288,7 +324,7 @@ def last_resort():
 def execute_turn() -> None:
     others = other_dragon_parts()
 
-    if try_split():
+    if try_split(others):
         return
 
     d = choose_direction(others)
