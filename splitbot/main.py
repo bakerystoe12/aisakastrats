@@ -193,7 +193,10 @@ def try_split(others):
     never split, to keep their body intact for evasive pathfinding."""
     if not AGGRESSIVE or ct.get_length() < SPLIT_MIN_LENGTH:
         return False
-    child = ct.get_length() // 2
+    if ct.get_length() % 2 == 0:
+        child = ct.get_length() // 2
+    else:
+        child = 2
     if ct.can_split(child):
         ct.do_split(child)
         return True
