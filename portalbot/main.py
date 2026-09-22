@@ -236,7 +236,7 @@ def last_resort():
     for d in Direction.get_direction_list():
         if here_tile.get_edge(d).get_edge_type() == EdgeType.PORTAL:
             return d
-    return ct.try_split()
+    return ct.get_dir()
 
 
 def execute_turn() -> None:

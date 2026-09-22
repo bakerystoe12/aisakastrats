@@ -9,6 +9,15 @@ right after init(), and keeps it for its whole life:
 
 Every dragon, regardless of style, still refuses a move that ends 1 tile from
 an enemy head, since that's an outright kill and never worth it.
+
+Pathfinding to pearls now runs a BFS over the visible 7x7 window instead of
+scoring moves by straight-line (Manhattan) distance. Manhattan distance
+ignores kelp walls, dragons blocking the way, and how the map wraps, so a
+move that "looks" closer in a straight line can actually be the long way
+round, or blocked entirely. BFS walks the real graph of passable edges and
+free tiles, so the distance used to rank moves is the true shortest-path
+distance, and ties are broken by which first step actually starts that
+shortest path.
 """
 import helper as unswbc
 from helper import Direction, EdgeType
@@ -133,10 +142,75 @@ def danger(pos, others):
 # ---------- tier 4: pearls (everyone) ----------
 
 def pearl_dist(pos, pearls):
-    """Distance from pos to the nearest visible pearl (0 if none are visible)."""
+    """Manhattan distance from pos to the nearest visible pearl (0 if none are
+    visible). Used only as a fallback when BFS can't reach a pearl (e.g. it's
+    outside the searchable window)."""
     if not pearls:
         return 0
     return min(dist(pos, p) for p in pearls)
+
+
+# ---------- BFS pathfinding ----------
+
+def bfs_targets(here, others):
+    """Breadth-first search outward from `here` over every tile currently in
+    view, following exactly the same legality rules as a single step
+    (open_step): edges must be EMPTY (kelp blocks, portals block since they'd
+    need special-casing), the tile ahead must be visible, and it must not
+    already hold a dragon segment. Tiles that would land us 1 tile from an
+    enemy head are also excluded from the search, so pathfinding never routes
+    through a tile that's an outright kill to stand on.
+
+    Returns two dicts:
+      dist_to[pos]  -> shortest number of steps from `here` to pos
+      root_dir[pos] -> which of the 4 first-step directions out of `here`
+                       starts the shortest path that reaches pos
+
+    Because this is a real BFS over the passable-edge graph (not a straight
+    line), dist_to gives the true shortest-path distance, accounting for
+    kelp walls, dragons in the way, and map wraparound - unlike the Manhattan
+    `dist()` helper, which only measures as the crow flies.
+    """
+    dist_to = {here: 0}
+    root_dir = {}
+    queue = deque([here])
+    while queue:
+        pos = queue.popleft()
+        tile = ct.get_tile(pos)
+        if tile is None:
+            continue
+        for d in Direction.get_direction_list():
+            if tile.get_edge(d).get_edge_type() != EdgeType.EMPTY:
+                continue
+            nxt = pos.add_dir(d)
+            if nxt in dist_to:
+                continue
+            ahead = ct.get_tile(nxt)
+            if ahead is None or ahead.get_dragon() is not None:
+                continue
+            if is_fatal(nxt, others):
+                continue
+            dist_to[nxt] = dist_to[pos] + 1
+            root_dir[nxt] = root_dir.get(pos, d)
+            queue.append(nxt)
+    return dist_to, root_dir
+
+
+def pearl_dist_bfs(d, pos, pearls, dist_to, root_dir):
+    """Real shortest-path distance remaining to the nearest pearl, if taking
+    first step `d` actually lies on that pearl's shortest BFS path from here.
+    Falls back to Manhattan distance from `pos` when no visible pearl has a
+    known BFS path through this particular first step (e.g. every pearl is
+    outside the searched window, or only reachable via a different step)."""
+    best = None
+    for pearl in pearls:
+        if pearl in dist_to and root_dir.get(pearl) == d:
+            remaining = dist_to[pearl] - 1  # the step to `pos` already counts as 1
+            if best is None or remaining < best:
+                best = remaining
+    if best is not None:
+        return best
+    return pearl_dist(pos, pearls)
 
 
 # ---------- decision ----------
@@ -162,25 +236,33 @@ def choose_direction(others):
 
     pearls = [t.get_position() for t in ct.get_tiles() if t.has_pearl()]
     facing = ct.get_dir()
-    # tier 2: drop moves into pockets too small for us
-    needed = ct.get_length()
-    space = {d: room(p, here, needed) for d, p in moves.items()}
-    roomy = {d: p for d, p in moves.items() if space[d] >= needed}
-    if roomy:
-        moves = roomy
-    else:
-        best = max(space.values())
-        moves = {d: p for d, p in moves.items() if space[d] == best}
+
+    # BFS once per turn from the current tile; every move's pearl score below
+    # is read off this same search rather than re-scanning per direction.
+    dist_to, root_dir = bfs_targets(here, others)
+
     if AGGRESSIVE:
-        # skip dead ends and danger: go straight for the nearest pearl
+        # skip dead ends and danger: go straight for the nearest pearl, using
+        # the real BFS shortest-path distance instead of Manhattan distance
         def key(d):
             p = moves[d]
-            return (pearl_dist(p, pearls), d != facing, random.random())
+            return (pearl_dist_bfs(d, p, pearls, dist_to, root_dir), d != facing, random.random())
     else:
-        # tiers 3 and 4: least danger first, then closest to a pearl
+        # tier 2: drop moves into pockets too small for us
+        needed = ct.get_length()
+        space = {d: room(p, here, needed) for d, p in moves.items()}
+        roomy = {d: p for d, p in moves.items() if space[d] >= needed}
+        if roomy:
+            moves = roomy
+        else:
+            best = max(space.values())
+            moves = {d: p for d, p in moves.items() if space[d] == best}
+
+        # tiers 3 and 4: least danger first, then closest to a pearl by real
+        # BFS shortest-path distance
         def key(d):
             p = moves[d]
-            return (danger(p, others), pearl_dist(p, pearls),
+            return (danger(p, others), pearl_dist_bfs(d, p, pearls, dist_to, root_dir),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -228,7 +310,7 @@ def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
     progress = game.get_round_num() / 400 
-    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                             
+    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                              
     AGGRESSIVE = random.random() < AGGRO_CHANCE
 
     while unswbc.update(ct, game):
