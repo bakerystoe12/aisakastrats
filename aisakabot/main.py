@@ -22,6 +22,7 @@ from collections import deque
 ct: unswbc.Controller
 game: unswbc.Game
 
+# Test these global variables
 
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
@@ -363,11 +364,13 @@ def execute_turn() -> None:
 def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
-    progress = game.get_round_num() / 350                            # 0 at start, 1 around round 350
-    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                    # ~95% -> floors at 40%
-    AGGRESSIVE = random.random() < AGGRO_CHANCE
+    progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
+    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.2)                    # ~95% -> floors at 40%
+    AGGRESSIVE = random.random() < AGGRO_CHANCE                         # heavy subject to change
 
     while unswbc.update(ct, game):
+        if game.get_round_num() > 475:
+            AGGRESSIVE = False
         execute_turn()
         unswbc.end_turn()
 

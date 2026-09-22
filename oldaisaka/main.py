@@ -22,6 +22,7 @@ from collections import deque
 ct: unswbc.Controller
 game: unswbc.Game
 
+# Test these global variables
 
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
@@ -34,8 +35,36 @@ MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other 
 SPLIT_ROOM_MULTIPLIER = 2  # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
                             # movement (tier 2) does before committing to it
-
+PEARL_SPAWN_HORIZON = 3   # ignore spawns further out than this - too likely to
+                           # be irrelevant or contested by the time we'd arrive
 # ---------- helpers ----------
+
+def gather_pearl_targets():
+    """Every tile worth heading toward for a pearl: ones that already have
+    one (cost 0), plus ones that don't yet but will soon enough to be worth
+    planning a path to. Skips pending tiles that currently have a dragon
+    sitting on them - a pearl can't spawn under a dragon, so an occupied
+    tile's countdown isn't trustworthy until whoever's there moves off."""
+    targets = []
+    for t in ct.get_tiles():
+        if t.has_pearl():
+            targets.append((t.get_position(), 0))
+            continue
+        pt = t.get_pearl_time()
+        if not (0 <= pt <= PEARL_SPAWN_HORIZON):
+            continue
+        if t.get_dragon() is not None:
+            continue
+        targets.append((t.get_position(), pt))
+    return targets
+
+def pearl_dist(pos, targets):
+    """Turns until pos could plausibly collect the best target: whichever is
+    later, the walk there or the spawn actually happening. Reduces to plain
+    distance for pearls that already exist, since their time is 0."""
+    if not targets:
+        return 0
+    return min(max(dist(pos, p), t) for p, t in targets)
 
 def has_room_to_split():
     """Flood-fills the open space around us (kelp and other dragons both
@@ -182,13 +211,6 @@ def danger(pos, others):
 
 # ---------- tier 4: pearls (everyone) ----------
 
-def pearl_dist(pos, pearls):
-    """Distance from pos to the nearest visible pearl (0 if none are visible)."""
-    if not pearls:
-        return 0
-    return min(dist(pos, p) for p in pearls)
-
-
 def ally_crowding(pos, others):
     """How boxed-in this move would leave us relative to our own team. This is
     a lightweight tiebreaker, not a hard restriction - it never overrides
@@ -211,9 +233,9 @@ def ally_crowding(pos, others):
 
 def choose_direction(others):
     here = ct.get_position()
-    pearls = [t.get_position() for t in ct.get_tiles() if t.has_pearl()]
+    targets = gather_pearl_targets()
 
-    if AGGRESSIVE and not pearls:
+    if AGGRESSIVE and not targets:
         # only gamble on a portal when there's nothing better to chase -
         # otherwise it was abandoning a visible pearl on a coin flip
         portals = portal_directions(here)
@@ -257,13 +279,13 @@ def choose_direction(others):
         # whichever option gives our own teammates more room
         def key(d):
             p = moves[d]
-            return (pearl_dist(p, pearls), ally_crowding(p, others),
+            return (pearl_dist(p, targets), ally_crowding(p, others),
                      d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first, then closest to a pearl
         def key(d):
             p = moves[d]
-            return (danger(p, others), pearl_dist(p, pearls),
+            return (danger(p, others), pearl_dist(p, targets),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -272,7 +294,9 @@ def choose_direction(others):
 def try_split(others):
     """Aggressive dragons split as soon as they're long enough. Safe dragons
     never split, to keep their body intact for evasive pathfinding."""
-    if not AGGRESSIVE or ct.get_length() < SPLIT_MIN_LENGTH:
+    if not AGGRESSIVE:
+        return False
+    if ct.get_length() < SPLIT_MIN_LENGTH:
         return False
     if nearby_ally_count(others) > MAX_NEARBY_ALLIES_TO_SPLIT:
         return False
