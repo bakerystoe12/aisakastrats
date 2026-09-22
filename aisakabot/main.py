@@ -365,7 +365,7 @@ def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
     progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
-    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.2)                    # ~95% -> floors at 40%
+    AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # ~95% -> floors at 40%
     AGGRESSIVE = random.random() < AGGRO_CHANCE                         # heavy subject to change
 
     while unswbc.update(ct, game):
