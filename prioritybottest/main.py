@@ -15,8 +15,10 @@ from collections import deque
 ct: unswbc.Controller
 game: unswbc.Game
 
+# random on average we have 90% that aggro split and get pearls, and 10% play safe, dont split
+
 SPLIT_ENABLED = True
-SPLIT_MIN_LENGTH = 8      # only split when at least this long (and no enemy head in view)
+SPLIT_MIN_LENGTH = 20      # only split when at least this long (and no enemy head in view)
 
 
 # ---------- helpers ----------
