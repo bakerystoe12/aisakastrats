@@ -162,23 +162,21 @@ def choose_direction(others):
 
     pearls = [t.get_position() for t in ct.get_tiles() if t.has_pearl()]
     facing = ct.get_dir()
-
+    # tier 2: drop moves into pockets too small for us
+    needed = ct.get_length()
+    space = {d: room(p, here, needed) for d, p in moves.items()}
+    roomy = {d: p for d, p in moves.items() if space[d] >= needed}
+    if roomy:
+        moves = roomy
+    else:
+        best = max(space.values())
+        moves = {d: p for d, p in moves.items() if space[d] == best}
     if AGGRESSIVE:
         # skip dead ends and danger: go straight for the nearest pearl
         def key(d):
             p = moves[d]
             return (pearl_dist(p, pearls), d != facing, random.random())
     else:
-        # tier 2: drop moves into pockets too small for us
-        needed = ct.get_length()
-        space = {d: room(p, here, needed) for d, p in moves.items()}
-        roomy = {d: p for d, p in moves.items() if space[d] >= needed}
-        if roomy:
-            moves = roomy
-        else:
-            best = max(space.values())
-            moves = {d: p for d, p in moves.items() if space[d] == best}
-
         # tiers 3 and 4: least danger first, then closest to a pearl
         def key(d):
             p = moves[d]
@@ -230,7 +228,7 @@ def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
     progress = game.get_round_num() / 400 
-    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                              
+    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                             
     AGGRESSIVE = random.random() < AGGRO_CHANCE
 
     while unswbc.update(ct, game):
