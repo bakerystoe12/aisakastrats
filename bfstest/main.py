@@ -3,21 +3,16 @@ Same pathfinding as safe_bot.py, except each dragon rolls its play style once,
 right after init(), and keeps it for its whole life:
 
   ~90% AGGRESSIVE : skips the dead-end and danger tiers, beelines for pearls,
-                     and splits as soon as it's long enough.
+                     splits as soon as it's long enough, and will occasionally
+                     dive through a portal on a hunch instead of pathing around.
   ~10% SAFE       : the original tiered logic (dead ends, then danger, then
-                     pearls) and never splits.
+                     pearls), never splits, and never risks a portal.
 
 Every dragon, regardless of style, still refuses a move that ends 1 tile from
-an enemy head, since that's an outright kill and never worth it.
-
-Pathfinding to pearls now runs a BFS over the visible 7x7 window instead of
-scoring moves by straight-line (Manhattan) distance. Manhattan distance
-ignores kelp walls, dragons blocking the way, and how the map wraps, so a
-move that "looks" closer in a straight line can actually be the long way
-round, or blocked entirely. BFS walks the real graph of passable edges and
-free tiles, so the distance used to rank moves is the true shortest-path
-distance, and ties are broken by which first step actually starts that
-shortest path.
+an enemy head, since that's an outright kill and never worth it. Portal dives
+are the one exception to that veto: we genuinely can't see what's on the other
+side of a portal, so there's nothing to check - it's a gamble kept exclusive
+to the aggressive style on purpose.
 """
 import helper as unswbc
 from helper import Direction, EdgeType
@@ -31,6 +26,8 @@ game: unswbc.Game
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
+PORTAL_CHANCE = 0.5             # aggressive dragons: odds of diving into an
+                                 # available portal this turn instead of pathing normally
 
 
 # ---------- helpers ----------
@@ -72,6 +69,18 @@ def open_step(pos, d):
     if ahead is None or ahead.get_dragon() is not None:
         return None
     return nxt
+
+
+def portal_directions(pos):
+    """Directions from pos whose edge is a portal. There's no way to know
+    what's waiting on the other side - add_dir doesn't resolve the far end
+    of a portal - so this isn't a scored move like the rest, just a list of
+    "would teleport" options for whoever's willing to risk it."""
+    tile = ct.get_tile(pos)
+    if tile is None:
+        return []
+    return [d for d in Direction.get_direction_list()
+            if tile.get_edge(d).get_edge_type() == EdgeType.PORTAL]
 
 
 # ---------- hard veto: never walk next to an enemy head ----------
@@ -126,7 +135,7 @@ def danger(pos, others):
     total = 0.0
     for part in others:
         d = dist(pos, part.get_position())
-        weight = 1.0 
+        weight = 1.0
         if part.is_head():
             if d <= 1:
                 total += 5 * weight
@@ -142,13 +151,10 @@ def danger(pos, others):
 # ---------- tier 4: pearls (everyone) ----------
 
 def pearl_dist(pos, pearls):
-    """Manhattan distance from pos to the nearest visible pearl (0 if none are
-    visible). Used only as a fallback when BFS can't reach a pearl (e.g. it's
-    outside the searchable window)."""
+    """Distance from pos to the nearest visible pearl (0 if none are visible)."""
     if not pearls:
         return 0
     return min(dist(pos, p) for p in pearls)
-
 
 # ---------- BFS pathfinding ----------
 
@@ -218,6 +224,13 @@ def pearl_dist_bfs(d, pos, pearls, dist_to, root_dir):
 def choose_direction(others):
     here = ct.get_position()
 
+    if AGGRESSIVE:
+        portals = portal_directions(here)
+        if portals and random.random() < PORTAL_CHANCE:
+            # nothing to score - we don't know what's on the other side -
+            # so just commit, in keeping with the aggressive style
+            return random.choice(portals)
+
     # tier 1: drop anything blocked
     moves = {}
     for d in Direction.get_direction_list():
@@ -234,6 +247,17 @@ def choose_direction(others):
     # else: every option is fatal (fully boxed in), so keep the full list and
     # let scoring pick the least-worst one rather than returning nothing
 
+    # tier 2: drop moves into pockets too small for us - applies to both
+    # styles, since walking into a dead end is never useful, only risky
+    needed = ct.get_length()
+    space = {d: room(p, here, needed) for d, p in moves.items()}
+    roomy = {d: p for d, p in moves.items() if space[d] >= needed}
+    if roomy:
+        moves = roomy
+    else:
+        best = max(space.values())
+        moves = {d: p for d, p in moves.items() if space[d] == best}
+
     pearls = [t.get_position() for t in ct.get_tiles() if t.has_pearl()]
     facing = ct.get_dir()
 
@@ -248,16 +272,6 @@ def choose_direction(others):
             p = moves[d]
             return (pearl_dist_bfs(d, p, pearls, dist_to, root_dir), d != facing, random.random())
     else:
-        # tier 2: drop moves into pockets too small for us
-        needed = ct.get_length()
-        space = {d: room(p, here, needed) for d, p in moves.items()}
-        roomy = {d: p for d, p in moves.items() if space[d] >= needed}
-        if roomy:
-            moves = roomy
-        else:
-            best = max(space.values())
-            moves = {d: p for d, p in moves.items() if space[d] == best}
-
         # tiers 3 and 4: least danger first, then closest to a pearl by real
         # BFS shortest-path distance
         def key(d):
@@ -268,7 +282,7 @@ def choose_direction(others):
     return min(moves, key=key)
 
 
-def try_split(others):
+def try_split():
     """Aggressive dragons split as soon as they're long enough. Safe dragons
     never split, to keep their body intact for evasive pathfinding."""
     if not AGGRESSIVE or ct.get_length() < SPLIT_MIN_LENGTH:
@@ -295,7 +309,7 @@ def last_resort():
 def execute_turn() -> None:
     others = other_dragon_parts()
 
-    if try_split(others):
+    if try_split():
         return
 
     d = choose_direction(others)
@@ -309,8 +323,8 @@ def execute_turn() -> None:
 def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
-    progress = game.get_round_num() / 400 
-    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                              
+    progress = game.get_round_num() / 350   # 0 at start, 1 at round 500
+    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                              # 100% -> 50%
     AGGRESSIVE = random.random() < AGGRO_CHANCE
 
     while unswbc.update(ct, game):
