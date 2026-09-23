@@ -114,24 +114,69 @@ LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the coold
 
 # ---------- helpers ----------
 
-def gather_pearl_targets():
+def terrain_reachable(start, cap=BFS_CAP):
+    """Flood fill using only known edge terrain (kelp vs empty), ignoring
+    dragons and danger entirely - kelp never moves, so this answers a
+    narrower, more stable question than bfs_targets does: 'is there any
+    possible route at all', not 'is there a route that's clear and safe
+    right now'. Uses the same remembered-edge memory as bfs_targets, so it
+    can see past the current 7x7 window for targets near the edge of view.
+    Portal edges don't count as passable here either, same reasoning as
+    everywhere else: we can't compute where they lead.
+ 
+    Returns the set of (x, y) tiles reached within `cap` steps. Since every
+    pearl target comes from gather_pearl_targets, which only looks at the
+    current 7x7 window, they're all close to `start` - this basically never
+    needs anywhere near the full cap in practice, it's just a safety valve
+    against a pathological kelp maze."""
+    seen = {(start.x, start.y)}
+    queue = deque([start])
+    while queue and len(seen) < cap:
+        pos = queue.popleft()
+        for d in Direction.get_direction_list():
+            if known_edge_type(pos, d) != EdgeType.EMPTY:
+                continue
+            nxt = pos.add_dir(d)
+            key = (nxt.x, nxt.y)
+            if key in seen:
+                continue
+            seen.add(key)
+            queue.append(nxt)
+    return seen
+ 
+ 
+def gather_pearl_targets(here):
     """Every tile worth heading toward for a pearl: ones that already have
     one (cost 0), plus ones that don't yet but will soon enough to be worth
     planning a path to. Skips pending tiles that currently have a dragon
     sitting on them - a pearl can't spawn under a dragon, so an occupied
-    tile's countdown isn't trustworthy until whoever's there moves off."""
-    targets = []
+    tile's countdown isn't trustworthy until whoever's there moves off.
+ 
+    Also drops anything not actually reachable from `here` through known
+    non-kelp terrain - a pearl sitting in a pocket permanently sealed off by
+    kelp is worth zero, not "very far away", and letting it into the target
+    list lets its Manhattan-distance fallback (see pearl_dist / pearl_dist_bfs)
+    mislead a direction comparison toward a target that can never be
+    collected. This check only concerns permanent terrain, not dragons or
+    danger - a target temporarily blocked by another dragon standing in the
+    way is still included here, since that dragon will move."""
+    candidates = []
     for t in ct.get_tiles():
         if t.has_pearl():
-            targets.append((t.get_position(), 0))
+            candidates.append((t.get_position(), 0))
             continue
         pt = t.get_pearl_time()
         if not (0 <= pt <= PEARL_SPAWN_HORIZON):
             continue
         if t.get_dragon() is not None:
             continue
-        targets.append((t.get_position(), pt))
-    return targets
+        candidates.append((t.get_position(), pt))
+ 
+    if not candidates:
+        return []
+ 
+    reachable = terrain_reachable(here)
+    return [(pos, pt) for pos, pt in candidates if (pos.x, pos.y) in reachable]
 
 def pearl_dist(pos, targets):
     """Turns until pos could plausibly collect the best target: whichever is
@@ -492,7 +537,7 @@ def cheap_fallback_direction(moves, others):
 
 def choose_direction(others, round_num, deadline=None):
     here = ct.get_position()
-    targets = gather_pearl_targets()
+    targets = gather_pearl_targets(here)
 
     if AGGRESSIVE and not targets:
         # only gamble on a portal when there's nothing better to chase -

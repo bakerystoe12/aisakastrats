@@ -65,7 +65,7 @@ game: unswbc.Game
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
-PORTAL_CHANCE = 0.8             # aggressive dragons: odds of diving into an
+PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
 MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
@@ -596,7 +596,7 @@ def desperate_split():
     min_size = unswbc.Constants.MIN_SIZE
     if length < 2 * min_size:
         return False   # too short to split anything off at all
-    child = max(min_size, min(length // 2, length - min_size))
+    child = max(min_size, length - min_size)
     if ct.can_split(child):
         ct.do_split(child)
         return True
