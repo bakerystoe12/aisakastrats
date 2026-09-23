@@ -44,10 +44,7 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
                                 # coarse: it let a slow node blow well past budget
                                 # before the next check even happened.
 
-TEAMMATE_MEMORY_FRESH_ROUNDS = 1   # how many rounds a teammate sighting is still worth avoiding
-
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
-TEAMMATE_MEMORY = {}   # (x, y) -> round we last saw one of our own other dragons standing there
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 #
@@ -325,29 +322,19 @@ def ally_crowding(pos, others):
 # ---------- memory: what this dragon has personally seen over its life ----------
 #
 # Vision only ever shows the 7x7 window around our head, so BFS on its own
-# can't route more than 3 tiles out. Two things are worth remembering past
-# that boundary, purely from this one dragon's own vision history - no
-# sonar, nothing shared with any other dragon:
-#
-#   - terrain: kelp and walls never move once placed, so any edge we've ever
-#     seen can be trusted forever, long after it scrolls out of view.
-#   - teammates: recording where we recently saw one of our own other
-#     dragons lets an aggressive dragon's BFS steer around ground a sibling
-#     is probably already covering, instead of both racing for the same spot.
+# can't route more than 3 tiles out. Terrain is worth remembering past that
+# boundary, purely from this one dragon's own vision history - no sonar,
+# nothing shared with any other dragon: kelp and walls never move once
+# placed, so any edge we've ever seen can be trusted forever, long after it
+# scrolls out of view.
 
 def remember_vision(round_num):
     """Fold everything currently visible into memory. Call once per turn,
     before making any decisions, so this turn's own tiles are included."""
-    my_id = ct.get_id()
-    my_team = ct.get_team()
     for tile in ct.get_tiles():
         pos = tile.get_position()
         key = (pos.x, pos.y)
         KNOWN_EDGES[key] = {d: tile.get_edge(d).get_edge_type() for d in Direction.get_direction_list()}
-
-        part = tile.get_dragon()
-        if part is not None and part.get_team() == my_team and part.get_id() != my_id:
-            TEAMMATE_MEMORY[key] = round_num
 
 
 def known_edge_type(pos, d):
@@ -370,18 +357,9 @@ def known_occupied(pos):
     return tile is not None and tile.get_dragon() is not None
 
 
-def teammate_recently_at(pos, round_num):
-    """Whether one of our own other dragons was seen standing on pos recently
-    enough that it might still be nearby. Deliberately a short window, since
-    a dragon moves every round and this is meant as a soft steer-clear for
-    BFS route planning, not a hard wall."""
-    seen_round = TEAMMATE_MEMORY.get((pos.x, pos.y))
-    return seen_round is not None and round_num - seen_round <= TEAMMATE_MEMORY_FRESH_ROUNDS
-
-
 # ---------- BFS pathfinding ----------
 
-def bfs_targets(here, others, round_num, avoid_teammates=False, cap=BFS_CAP, deadline=None):
+def bfs_targets(here, others, cap=BFS_CAP, deadline=None):
     """Breadth-first search outward from `here`, using live vision where we
     have it and remembered terrain beyond it (known_edge_type / known_occupied),
     so the search isn't boxed in by the 7x7 window the way plain vision is.
@@ -389,15 +367,6 @@ def bfs_targets(here, others, round_num, avoid_teammates=False, cap=BFS_CAP, dea
     it must not be an outright kill (is_fatal). Portal edges are skipped here
     just like kelp: crossing one doesn't land at add_dir's tile, so there's
     no tile for this search to record a distance for or continue from.
-
-    When avoid_teammates is set, a tile where we recently saw one of our own
-    other dragons is also treated as blocked for the purposes of this search,
-    so an aggressive dragon doesn't plan a route straight through ground a
-    sibling is probably already covering (see teammate_recently_at). This is
-    only ever a soft, short-lived nudge to route *planning*: the actual next
-    move is always re-checked against live vision separately (open_step,
-    is_fatal), so this can never cause a move into a tile that's actually
-    free right now.
 
     Stops after `cap` tiles so a long-lived dragon's growing memory can't
     make this search unbounded. If `deadline` (a time.perf_counter() value)
@@ -433,15 +402,13 @@ def bfs_targets(here, others, round_num, avoid_teammates=False, cap=BFS_CAP, dea
                 continue
             if is_fatal(nxt, others):
                 continue
-            if avoid_teammates and teammate_recently_at(nxt, round_num):
-                continue
             dist_to[nxt] = dist_to[pos] + 1
             root_dir[nxt] = root_dir.get(pos, d)
             queue.append(nxt)
     return dist_to, root_dir
 
 
-def pearl_dist_bfs(pos, targets, others, round_num, avoid_teammates, deadline=None):
+def pearl_dist_bfs(pos, targets, others, deadline=None):
     """Real shortest-path turns-until-collectable for the best target, using
     a BFS run from `pos` (the tile this move would land on) itself, not a
     single shared search from the current tile.
@@ -461,7 +428,7 @@ def pearl_dist_bfs(pos, targets, others, round_num, avoid_teammates, deadline=No
     sits outside `cap`, or through territory never explored)."""
     if not targets:
         return 0
-    dist_to, _ = bfs_targets(pos, others, round_num, avoid_teammates=avoid_teammates, deadline=deadline)
+    dist_to, _ = bfs_targets(pos, others, deadline=deadline)
     best = None
     for target_pos, pt in targets:
         if target_pos in dist_to:
@@ -545,18 +512,17 @@ def choose_direction(others, round_num, deadline=None):
         # shortest-path distance instead of Manhattan distance (run fresh
         # from each candidate move - see pearl_dist_bfs for why), and
         # breaking ties toward whichever option gives our own teammates
-        # more room. Also steers away from ground a sibling was recently
-        # seen on (avoid_teammates), so splits spread out.
+        # more room.
         def key(d):
             p = moves[d]
-            return (pearl_dist_bfs(p, targets, others, round_num, AGGRESSIVE, deadline=deadline),
+            return (pearl_dist_bfs(p, targets, others, deadline=deadline),
                      ally_crowding(p, others), d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first, then closest to a pearl by real
         # BFS shortest-path distance
         def key(d):
             p = moves[d]
-            return (danger(p, others), pearl_dist_bfs(p, targets, others, round_num, AGGRESSIVE, deadline=deadline),
+            return (danger(p, others), pearl_dist_bfs(p, targets, others, deadline=deadline),
                      d != facing, random.random())
 
     return min(moves, key=key)
