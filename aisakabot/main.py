@@ -46,6 +46,8 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
 
+random.seed(0)
+
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 #
 # Crossing a portal edge lands us somewhere add_dir can't compute, so in
@@ -539,6 +541,7 @@ def try_split(others):
         return False
     if not has_room_to_split():
         return False
+    
     if ct.get_length() % 2 == 0:
         child = ct.get_length() // 2
     else:

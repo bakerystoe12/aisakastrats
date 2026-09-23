@@ -96,7 +96,7 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
                                 # slower - see test_deadline.py for why 32 was too
                                 # coarse: it let a slow node blow well past budget
                                 # before the next check even happened.
-
+random.seed(0)
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 #
 # Crossing a portal edge lands us somewhere add_dir can't compute, so in
