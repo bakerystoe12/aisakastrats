@@ -619,6 +619,8 @@ def main() -> None:
     AGGRESSIVE = random.random() < AGGRO_CHANCE                     # heavy subject to change
                        
     while unswbc.update(ct, game):
+        if game.get_round_num() % 50 == 0 and game.get_round_num != 0:
+            AGGRESSIVE = random.random() < 0.5
         if game.get_round_num() > 475:
             AGGRESSIVE = False
         execute_turn()
