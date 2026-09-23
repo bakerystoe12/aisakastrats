@@ -358,8 +358,6 @@ def known_edge_type(pos, d):
     if edges is None:
         if AGGRESSIVE:
             return EdgeType.EMPTY
-        else:
-            return EdgeType.KELP
     return edges.get(d, EdgeType.EMPTY)
 
 
