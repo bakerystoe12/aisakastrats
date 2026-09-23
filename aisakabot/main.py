@@ -596,7 +596,7 @@ def desperate_split():
     min_size = unswbc.Constants.MIN_SIZE
     if length < 2 * min_size:
         return False   # too short to split anything off at all
-    child = max(min_size, min(length // 2, length - min_size))
+    child = max(min_size, length - min_size)
     if ct.can_split(child):
         ct.do_split(child)
         return True
