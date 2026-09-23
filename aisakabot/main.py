@@ -70,10 +70,10 @@ PORTAL_CHANCE = 0.8             # aggressive dragons: odds of diving into an
 
 MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
 
-SPLIT_ROOM_MULTIPLIER = 3   # a split needs room for two independent bodies, not
+SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
                             # movement (tier 2) does before committing to it
-PEARL_SPAWN_HORIZON = 3   # ignore spawns further out than this - too likely to
+PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
 
 BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
