@@ -173,7 +173,7 @@ def nearby_ally_count(others, radius=3):
 
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around.
-    Used for proximity/threat checks (is_fatal, danger, ally_crowding), and
+    Used for proximity/threat checks (danger, ally_crowding), and
     as pearl_dist's fallback when BFS can't confirm a real path - see
     bfs_targets and pearl_dist_bfs below for the actual pathfinding."""
     w, h = game.get_map_size()
@@ -243,14 +243,40 @@ def remember_portal_crossing(pid, round_num):
 
 # ---------- hard veto: never walk next to an enemy head ----------
 
-def is_fatal(pos, others):
-    """True if pos ends up 1 tile (or 0, though that's already blocked) from
-    an enemy head. Applies to every dragon, aggressive or safe."""
+def build_enemy_head_zone(others):
+    """Precompute, once per turn, the set of every tile within 1 step of an
+    enemy head (plus the head tile itself).
+
+    is_fatal() only ever needs to answer "is pos in that set" - but before
+    this it recomputed the answer from scratch by scanning every single
+    visible dragon segment, every single time it was called. That call sits
+    on the hot path: bfs_targets calls is_fatal for every newly-discovered
+    tile, and pearl_dist_bfs runs a fresh BFS (up to BFS_CAP nodes) for each
+    of up to 4 candidate directions per turn. With N visible dragon segments,
+    that was O(4 * BFS_CAP * N) work just for fatality checks - easily the
+    single largest cost in a turn once the board has a realistic number of
+    dragons on it, and the main risk of a timeout on a busy server.
+    Building the zone once (O(number of enemy heads), which is small and
+    doesn't scale with BFS depth) turns every one of those lookups into an
+    O(1) set membership test instead."""
     my_team = ct.get_team()
+    zone = set()
     for part in others:
-        if part.is_head() and part.get_team() != my_team and dist(pos, part.get_position()) <= 1:
-            return True
-    return False
+        if not part.is_head() or part.get_team() == my_team:
+            continue
+        p = part.get_position()
+        zone.add((p.x, p.y))
+        for d in Direction.get_direction_list():
+            n = p.add_dir(d)
+            zone.add((n.x, n.y))
+    return zone
+
+
+def is_fatal(pos, enemy_zone):
+    """True if pos ends up 1 tile (or 0, though that's already blocked) from
+    an enemy head. Applies to every dragon, aggressive or safe. See
+    build_enemy_head_zone for why this is now a plain set lookup."""
+    return (pos.x, pos.y) in enemy_zone
 
 
 # ---------- tier 2: dead ends (safe dragons only) ----------
@@ -358,7 +384,6 @@ def known_edge_type(pos, d):
     if edges is None:
         if AGGRESSIVE:
             return EdgeType.EMPTY
-        return EdgeType.KELP        # unseen & safe -> untraversable, not a crash
     return edges.get(d, EdgeType.EMPTY)
 
 
@@ -372,7 +397,7 @@ def known_occupied(pos):
 
 # ---------- BFS pathfinding ----------
 
-def bfs_targets(here, others, cap=BFS_CAP, deadline=None):
+def bfs_targets(here, enemy_zone, cap=BFS_CAP, deadline=None, targets=None):
     """Breadth-first search outward from `here`, using live vision where we
     have it and remembered terrain beyond it (known_edge_type / known_occupied),
     so the search isn't boxed in by the 7x7 window the way plain vision is.
@@ -387,10 +412,26 @@ def bfs_targets(here, others, cap=BFS_CAP, deadline=None):
     found so far - a partial result, not a wrong one: pearl_dist_bfs already
     falls back to a Manhattan estimate for any target this didn't reach.
 
-    Returns two dicts:
+    `targets`, if given, is a dict of (x, y) -> pearl_time. When present,
+    this stops exploring as soon as it's certain no undiscovered tile could
+    beat the best target found so far: BFS visits tiles in non-decreasing
+    distance order, and a target's score is max(distance, pearl_time), which
+    is always >= distance. So once the current frontier's distance already
+    exceeds the best score found, every tile still to come can only score
+    >= that frontier distance > best, and can never win. In the common case
+    (a pearl a few tiles away), this turns an exhaustive cap-120-tile search
+    into one that stops after a handful of tiles - this, together with
+    build_enemy_head_zone, is what actually keeps BFS inside TURN_TIME_BUDGET
+    on a busy board, rather than relying on the cap/deadline as the only
+    brakes.
+
+    Returns three things:
       dist_to[pos]  -> shortest known number of steps from `here` to pos
       root_dir[pos] -> which of the 4 first-step directions out of `here`
                        starts that shortest path
+      best          -> smallest max(distance, pearl_time) seen among
+                       `targets` so far, or None if targets is None or none
+                       was found within budget
 
     Because this is a real BFS over the passable-edge graph (not a straight
     line), dist_to gives the true shortest-path distance, accounting for
@@ -401,27 +442,39 @@ def bfs_targets(here, others, cap=BFS_CAP, deadline=None):
     root_dir = {}
     queue = deque([here])
     popped = 0
+    best = None
     while queue and len(dist_to) < cap:
         if deadline is not None:
             popped += 1
             if popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
                 break
         pos = queue.popleft()
+        d_pos = dist_to[pos]
+
+        if targets is not None:
+            if best is not None and d_pos > best:
+                break  # nothing left in the queue can beat `best` - see docstring
+            key = (pos.x, pos.y)
+            if key in targets:
+                candidate = max(d_pos, targets[key])
+                if best is None or candidate < best:
+                    best = candidate
+
         for d in Direction.get_direction_list():
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
             if nxt in dist_to or known_occupied(nxt):
                 continue
-            if is_fatal(nxt, others):
+            if is_fatal(nxt, enemy_zone):
                 continue
-            dist_to[nxt] = dist_to[pos] + 1
+            dist_to[nxt] = d_pos + 1
             root_dir[nxt] = root_dir.get(pos, d)
             queue.append(nxt)
-    return dist_to, root_dir
+    return dist_to, root_dir, best
 
 
-def pearl_dist_bfs(pos, targets, others, deadline=None):
+def pearl_dist_bfs(pos, targets, enemy_zone, deadline=None):
     """Real shortest-path turns-until-collectable for the best target, using
     a BFS run from `pos` (the tile this move would land on) itself, not a
     single shared search from the current tile.
@@ -438,19 +491,32 @@ def pearl_dist_bfs(pos, targets, others, deadline=None):
 
     Falls back to pearl_dist's own Manhattan-based estimate only for a
     target this search genuinely couldn't reach at all from `pos` (e.g. it
-    sits outside `cap`, or through territory never explored)."""
+    sits outside `cap`, or through territory never explored) - not for a
+    target that scores worse than one BFS already confirmed as reachable,
+    since an unexplored target's Manhattan number is only ever a lower
+    bound on its true cost and could look artificially better than the real
+    best; see bfs_targets' early-stop for why that distinction matters."""
     if not targets:
         return 0
-    dist_to, _ = bfs_targets(pos, others, deadline=deadline)
-    best = None
+    target_map = {(p.x, p.y): pt for p, pt in targets}
+    dist_to, _, best = bfs_targets(pos, enemy_zone, deadline=deadline, targets=target_map)
+    if best is not None:
+        return best
+
+    # Nothing was confirmed via BFS at all - fall back to Manhattan-based
+    # estimates, preferring a real BFS distance (dist_to) over Manhattan
+    # wherever a target happens to be present in dist_to already (e.g. it
+    # was discovered but the search ran out of budget before popping it).
+    fallback = None
     for target_pos, pt in targets:
-        if target_pos in dist_to:
-            turns = max(dist_to[target_pos], pt)
-        else:
-            turns = max(dist(pos, target_pos), pt)
-        if best is None or turns < best:
-            best = turns
-    return best
+        turns = dist_to.get((target_pos.x, target_pos.y))
+        if turns is None:
+            turns = dist(pos, target_pos)
+        turns = max(turns, pt)
+        if fallback is None or turns < fallback:
+            fallback = turns
+    return fallback
+
 
 # ---------- decision ----------
 
@@ -463,7 +529,7 @@ def cheap_fallback_direction(moves, others):
     return min(moves, key=lambda d: (danger(moves[d], others), random.random()))
 
 
-def choose_direction(others, round_num, deadline=None):
+def choose_direction(others, enemy_zone, round_num, deadline=None):
     here = ct.get_position()
     targets = gather_pearl_targets(here)
 
@@ -491,7 +557,7 @@ def choose_direction(others, round_num, deadline=None):
         return None
 
     # hard veto: drop anything that ends next to an enemy head, for every dragon
-    safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, others)}
+    safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, enemy_zone)}
     if safe_from_death:
         moves = safe_from_death
     # else: every option is fatal (fully boxed in), so keep the full list and
@@ -528,14 +594,14 @@ def choose_direction(others, round_num, deadline=None):
         # more room.
         def key(d):
             p = moves[d]
-            return (pearl_dist_bfs(p, targets, others, deadline=deadline),
+            return (pearl_dist_bfs(p, targets, enemy_zone, deadline=deadline),
                      ally_crowding(p, others), d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first, then closest to a pearl by real
         # BFS shortest-path distance
         def key(d):
             p = moves[d]
-            return (danger(p, others), pearl_dist_bfs(p, targets, others, deadline=deadline),
+            return (danger(p, others), pearl_dist_bfs(p, targets, enemy_zone, deadline=deadline),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -608,11 +674,12 @@ def execute_turn() -> None:
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
     remember_vision()
+    enemy_zone = build_enemy_head_zone(others)
 
     if try_split(others):
         return
 
-    d = choose_direction(others, round_num, deadline=deadline)
+    d = choose_direction(others, enemy_zone, round_num, deadline=deadline)
     if d is None:
         d = last_resort(round_num)
         if d is None:
