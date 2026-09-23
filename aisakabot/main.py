@@ -541,9 +541,12 @@ def try_split(others):
         return False
     if not has_room_to_split():
         return False
-    
-    if ct.get_length() % 2 == 0:
-        child = ct.get_length() // 2
+    length = ct.get_length()
+    if length % 2 == 0:
+        if (length // 2)  % 2 != 0:
+            child = 2
+        else:
+            child = length // 2
     else:
         child = 2
     if ct.can_split(child):
