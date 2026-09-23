@@ -3,13 +3,12 @@ from helper import Direction, EdgeType
 import random
 import time
 from collections import deque
+import hashlib
 
 ct: unswbc.Controller
 game: unswbc.Game
 
 # Test these global variables
-
-AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
 PORTAL_CHANCE = 0.9             # aggressive dragons: odds of diving into an
@@ -46,7 +45,6 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
 
-random.seed(0)
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 #
@@ -64,6 +62,15 @@ LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
 
 # ---------- helpers ----------
+
+def stable_roll(key):
+    """Deterministic value in [0,1) derived from `key`. Same key always
+    gives the same roll - unlike random.random(), this can't be desynced
+    by seeding, call order, or how many other random() calls happened
+    earlier this turn/process. Use this for any role-assignment decision
+    that needs a reliable population-wide ratio."""
+    h = hashlib.sha256(str(key).encode()).hexdigest()
+    return int(h[:8], 16) / 0xFFFFFFFF
 
 def terrain_reachable(start, cap=BFS_CAP):
     """Flood fill using only known edge terrain (kelp vs empty), ignoring
@@ -614,15 +621,23 @@ def execute_turn() -> None:
 def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
-    progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
-    AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
-    AGGRESSIVE = random.random() < AGGRO_CHANCE                     # heavy subject to change
-                       
+    rolled = False
+
+    
     while unswbc.update(ct, game):
-        if game.get_round_num() % 50 == 0 and game.get_round_num != 0:
-            AGGRESSIVE = random.random() < 0.5
+
+        if rolled == False:
+            progress = (game.get_round_num() - 1) / 250                            # 0 at start, 1 around round 350
+            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
+            AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
+            rolled = True
+
+        if AGGRESSIVE == True and game.get_round_num() % 50 == 0 and game.get_round_num() != 0:
+            AGGRESSIVE = stable_roll(ct.get_id()) < 0.5
+
         if game.get_round_num() > 475:
             AGGRESSIVE = False
+
         execute_turn()
         unswbc.end_turn()
 

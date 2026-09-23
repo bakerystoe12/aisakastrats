@@ -37,7 +37,7 @@ SPLIT_ROOM_MULTIPLIER = 2  # a split needs room for two independent bodies, not
                             # movement (tier 2) does before committing to it
 PEARL_SPAWN_HORIZON = 3   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
-random.seed(0)
+
 # ---------- helpers ----------
 
 def gather_pearl_targets():
@@ -370,6 +370,7 @@ def main() -> None:
     AGGRESSIVE = random.random() < AGGRO_CHANCE                         # heavy subject to change
 
     while unswbc.update(ct, game):
+        random.seed(game.get_round_num())
         if game.get_round_num() > 475:
             AGGRESSIVE = False
         execute_turn()
