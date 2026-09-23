@@ -625,7 +625,7 @@ def main() -> None:
 
     
     while unswbc.update(ct, game):
-
+        
         if rolled == False:
             progress = (game.get_round_num() - 1) / 250                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
@@ -638,6 +638,9 @@ def main() -> None:
         if game.get_round_num() > 475:
             AGGRESSIVE = False
 
+        if ct.get_length() > 6:    # Prevention from desperate split child from becoming aggressive
+            AGGRESSIVE = False
+        
         execute_turn()
         unswbc.end_turn()
 
