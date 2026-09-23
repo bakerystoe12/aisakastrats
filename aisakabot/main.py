@@ -289,13 +289,13 @@ def danger(pos, others):
         weight = 1.0
         if part.is_head():
             if d <= 1:
-                total += 5 * weight
+                total += 2 * weight
             elif d == 2:
-                total += 4 * weight
-            elif d == 3:
                 total += 1 * weight
+            elif d == 3:
+                total += 0.5 * weight
         elif d <= 1:
-            total += 1 * weight
+            total += 0.5 * weight
     return total
 
 
