@@ -571,7 +571,10 @@ def choose_direction(others, round_num, deadline=None):
 
     # tier 2: drop moves into pockets too small for us - applies to both
     # styles, since walking into a dead end is never useful, only risky
-    needed = ct.get_length() + 1
+    if AGGRESSIVE == True:
+        needed = ct.get_length()
+    else:
+        needed = ct.get_length() + 1
     space = {d: room(p, here, needed) for d, p in moves.items()}
     roomy = {d: p for d, p in moves.items() if space[d] >= needed}
     if roomy:
