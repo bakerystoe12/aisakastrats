@@ -65,12 +65,12 @@ game: unswbc.Game
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
-PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
+PORTAL_CHANCE = 0.8             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
 MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
 
-SPLIT_ROOM_MULTIPLIER = 2  # a split needs room for two independent bodies, not
+SPLIT_ROOM_MULTIPLIER = 3   # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
                             # movement (tier 2) does before committing to it
 PEARL_SPAWN_HORIZON = 3   # ignore spawns further out than this - too likely to
@@ -309,22 +309,24 @@ def room(start, came_from, cap):
         count += 1
         if count >= cap:
             return cap
-        tile = ct.get_tile(pos)
         for d in Direction.get_direction_list():
-            if tile.get_edge(d).get_edge_type() != EdgeType.EMPTY:
+            if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
             if nxt in seen:
                 continue
-            ahead = ct.get_tile(nxt)
-            if ahead is None:
+            if not tile_ever_seen(nxt):
                 return cap
-            if ahead.get_dragon() is not None:
+            if known_occupied(nxt):
                 continue
             seen.add(nxt)
             queue.append(nxt)
     return count
 
+def tile_ever_seen(pos):
+    if ct.get_tile(pos) is not None:
+        return True
+    return (pos.x, pos.y) in KNOWN_EDGES
 
 # ---------- tier 3: dragons (safe dragons only) ----------
 
@@ -693,12 +695,15 @@ def execute_turn() -> None:
 
 def main() -> None:
     global ct, game, AGGRESSIVE
+    rolled = False
     ct, game = unswbc.init()
-    progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
-    AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
-    AGGRESSIVE = random.random() < AGGRO_CHANCE                         # heavy subject to change
 
     while unswbc.update(ct, game):
+        if not rolled:
+            progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
+            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
+            AGGRESSIVE = random.random() < AGGRO_CHANCE                     # heavy subject to change
+            rolled = True                         
         if game.get_round_num() > 475:
             AGGRESSIVE = False
         execute_turn()

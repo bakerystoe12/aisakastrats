@@ -22,18 +22,79 @@ from collections import deque
 ct: unswbc.Controller
 game: unswbc.Game
 
+# Test these global variables
 
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
-PORTAL_CHANCE = 0.5             # aggressive dragons: odds of diving into an
+PORTAL_CHANCE = 0.4             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
+MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
 
+SPLIT_ROOM_MULTIPLIER = 2  # a split needs room for two independent bodies, not
+                            # one, so require more open space than plain
+                            # movement (tier 2) does before committing to it
+PEARL_SPAWN_HORIZON = 3   # ignore spawns further out than this - too likely to
+                           # be irrelevant or contested by the time we'd arrive
 # ---------- helpers ----------
 
+def gather_pearl_targets():
+    """Every tile worth heading toward for a pearl: ones that already have
+    one (cost 0), plus ones that don't yet but will soon enough to be worth
+    planning a path to. Skips pending tiles that currently have a dragon
+    sitting on them - a pearl can't spawn under a dragon, so an occupied
+    tile's countdown isn't trustworthy until whoever's there moves off."""
+    targets = []
+    for t in ct.get_tiles():
+        if t.has_pearl():
+            targets.append((t.get_position(), 0))
+            continue
+        pt = t.get_pearl_time()
+        if not (0 <= pt <= PEARL_SPAWN_HORIZON):
+            continue
+        if t.get_dragon() is not None:
+            continue
+        targets.append((t.get_position(), pt))
+    return targets
+
+def pearl_dist(pos, targets):
+    """Turns until pos could plausibly collect the best target: whichever is
+    later, the walk there or the spawn actually happening. Reduces to plain
+    distance for pearls that already exist, since their time is 0."""
+    if not targets:
+        return 0
+    return min(max(dist(pos, p), t) for p, t in targets)
+
+def has_room_to_split():
+    """Flood-fills the open space around us (kelp and other dragons both
+    block it, same as room() does for movement) and refuses to split if
+    it's too walled-in to comfortably hold both the parent and the new
+    child afterward - a tight, kelp-choked pocket is exactly where two
+    independent bodies end up ramming each other."""
+    here = ct.get_position()
+    needed = ct.get_length() * SPLIT_ROOM_MULTIPLIER
+    return room(here, here, needed) >= needed
+
+def nearby_ally_count(others, radius=3):
+    """How many distinct ally dragons (besides us) have any visible segment
+    within `radius` tiles of our head. Counts dragons, not segments, so one
+    long ally snake doesn't get double-weighted against a short one."""
+    here = ct.get_position()
+    my_team = ct.get_team()
+    seen_ids = set()
+    for part in others:
+        if part.get_team() != my_team:
+            continue
+        if part.get_id() in seen_ids:
+            continue
+        if dist(here, part.get_position()) <= radius:
+            seen_ids.add(part.get_id())
+    return len(seen_ids)
+
+
 def dist(a, b):
-    """Manhattan distance that accounts for the map wrapping around."""
+    """Manhattan distance that accounts for the map wrapping around."""  # replace with true distance, via bfs
     w, h = game.get_map_size()
     dx = abs(a.x - b.x)
     dx = min(dx, w - dx)
@@ -150,19 +211,33 @@ def danger(pos, others):
 
 # ---------- tier 4: pearls (everyone) ----------
 
-def pearl_dist(pos, pearls):
-    """Distance from pos to the nearest visible pearl (0 if none are visible)."""
-    if not pearls:
-        return 0
-    return min(dist(pos, p) for p in pearls)
-
+def ally_crowding(pos, others):
+    """How boxed-in this move would leave us relative to our own team. This is
+    a lightweight tiebreaker, not a hard restriction - it never overrides
+    pearl-seeking, it only nudges between two moves that are otherwise
+    equally good, so aggressive dragons stop squeezing each other into
+    corridors instead of just tier-1-blocking each other at the last tile."""
+    my_team = ct.get_team()
+    total = 0.0
+    for part in others:
+        if part.get_team() != my_team:
+            continue
+        d = dist(pos, part.get_position())
+        if d <= 1:
+            total += 2
+        elif d == 2:
+            total += 1
+    return total
 
 # ---------- decision ----------
 
 def choose_direction(others):
     here = ct.get_position()
+    targets = gather_pearl_targets()
 
-    if AGGRESSIVE:
+    if AGGRESSIVE and not targets:
+        # only gamble on a portal when there's nothing better to chase -
+        # otherwise it was abandoning a visible pearl on a coin flip
         portals = portal_directions(here)
         if portals and random.random() < PORTAL_CHANCE:
             # nothing to score - we don't know what's on the other side -
@@ -196,29 +271,36 @@ def choose_direction(others):
         best = max(space.values())
         moves = {d: p for d, p in moves.items() if space[d] == best}
 
-    pearls = [t.get_position() for t in ct.get_tiles() if t.has_pearl()]
     facing = ct.get_dir()
 
     if AGGRESSIVE:
         # skip danger, but dead ends are already handled above: go straight
-        # for the nearest pearl among whatever's left
+        # for the nearest pearl among whatever's left, breaking ties toward
+        # whichever option gives our own teammates more room
         def key(d):
             p = moves[d]
-            return (pearl_dist(p, pearls), d != facing, random.random())
+            return (pearl_dist(p, targets), ally_crowding(p, others),
+                     d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first, then closest to a pearl
         def key(d):
             p = moves[d]
-            return (danger(p, others), pearl_dist(p, pearls),
+            return (danger(p, others), pearl_dist(p, targets),
                      d != facing, random.random())
 
     return min(moves, key=key)
 
 
-def try_split():
+def try_split(others):
     """Aggressive dragons split as soon as they're long enough. Safe dragons
     never split, to keep their body intact for evasive pathfinding."""
-    if not AGGRESSIVE or ct.get_length() < SPLIT_MIN_LENGTH:
+    if not AGGRESSIVE:
+        return False
+    if ct.get_length() < SPLIT_MIN_LENGTH:
+        return False
+    if nearby_ally_count(others) > MAX_NEARBY_ALLIES_TO_SPLIT:
+        return False
+    if not has_room_to_split():
         return False
     if ct.get_length() % 2 == 0:
         child = ct.get_length() // 2
@@ -230,24 +312,50 @@ def try_split():
     return False
 
 
+def desperate_split():
+    """Split off as much of the tail as legally possible, ignoring the normal
+    AGGRESSIVE/SPLIT_MIN_LENGTH gate - this only runs when we're fully boxed
+    in with no legal move, so saving even part of the dragon as a separate
+    unit beats losing all of it to whatever's about to happen to the head."""
+    length = ct.get_length()
+    min_size = unswbc.Constants.MIN_SIZE
+    if length < 2 * min_size:
+        return False   # too short to split anything off at all
+    child = max(min_size, min(length // 2, length - min_size))
+    if ct.can_split(child):
+        ct.do_split(child)
+        return True
+    return False
+
+
 def last_resort():
-    """Every direction is blocked: try a portal, else just keep facing forward."""
+    """Every direction is blocked. Try a portal escape first. Failing that,
+    split off the tail rather than lose the whole body - the child becomes
+    its own dragon immediately, so it survives the parent's fate even if the
+    head doesn't. Returns a Direction to move, or None if a split already
+    used up the turn."""
     here_tile = ct.get_tile(ct.get_position())
     for d in Direction.get_direction_list():
         if here_tile.get_edge(d).get_edge_type() == EdgeType.PORTAL:
             return d
-    return ct.get_dir()
+
+    if desperate_split():
+        return None   # split used the turn; nothing left to move
+
+    return ct.get_dir()   # truly nothing left to try
 
 
 def execute_turn() -> None:
     others = other_dragon_parts()
 
-    if try_split():
+    if try_split(others):
         return
 
     d = choose_direction(others)
     if d is None:
         d = last_resort()
+        if d is None:
+            return   # last_resort already split; no move to send
     ct.make_move(d)
 
 
@@ -256,11 +364,13 @@ def execute_turn() -> None:
 def main() -> None:
     global ct, game, AGGRESSIVE
     ct, game = unswbc.init()
-    progress = game.get_round_num() / 350   # 0 at start, 1 at round 500
-    AGGRO_CHANCE = max(0.95 - 0.6 * progress, 0.4)                              # 100% -> 50%
-    AGGRESSIVE = random.random() < AGGRO_CHANCE
+    progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
+    AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
+    AGGRESSIVE = random.random() < AGGRO_CHANCE                         # heavy subject to change
 
     while unswbc.update(ct, game):
+        if game.get_round_num() > 475:
+            AGGRESSIVE = False
         execute_turn()
         unswbc.end_turn()
 
