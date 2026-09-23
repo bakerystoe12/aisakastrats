@@ -631,7 +631,7 @@ def main() -> None:
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if AGGRESSIVE == True and game.get_round_num() % 100 == 0 and game.get_round_num() != 0:  # 50/50 turning bots into safe every 100 rounds
+        if AGGRESSIVE == True and game.get_round_num() % 150 == 0 and game.get_round_num() != 0:  # 50/50 turning bots into safe every 100 rounds
             AGGRESSIVE = stable_roll(ct.get_id()) < 0.2
 
         if game.get_round_num() > 475:
