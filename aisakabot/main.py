@@ -60,7 +60,7 @@ KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever onc
 
 LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
-
+random.seed(14)
 # ---------- helpers ----------
 
 def stable_roll(key):
@@ -337,7 +337,7 @@ def ally_crowding(pos, others):
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
 
-def remember_vision(round_num):
+def remember_vision():
     """Fold everything currently visible into memory. Call once per turn,
     before making any decisions, so this turn's own tiles are included."""
     for tile in ct.get_tiles():
@@ -355,7 +355,12 @@ def known_edge_type(pos, d):
     if tile is not None:
         return tile.get_edge(d).get_edge_type()
     edges = KNOWN_EDGES.get((pos.x, pos.y))
-    return None if edges is None else edges.get(d)
+    if edges is None:
+        if AGGRESSIVE:
+            return EdgeType.EMPTY
+        else:
+            return EdgeType.KELP
+    return edges.get(d, EdgeType.EMPTY)
 
 
 def known_occupied(pos):
@@ -603,7 +608,7 @@ def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
-    remember_vision(round_num)
+    remember_vision()
 
     if try_split(others):
         return
