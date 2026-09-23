@@ -358,6 +358,7 @@ def known_edge_type(pos, d):
     if edges is None:
         if AGGRESSIVE:
             return EdgeType.EMPTY
+        return EdgeType.KELP        # unseen & safe -> untraversable, not a crash
     return edges.get(d, EdgeType.EMPTY)
 
 
