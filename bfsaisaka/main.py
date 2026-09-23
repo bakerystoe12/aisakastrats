@@ -65,7 +65,7 @@ game: unswbc.Game
 AGGRESSIVE = True                 # overwritten once per dragon, right after init()
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
-PORTAL_CHANCE = 0.4             # aggressive dragons: odds of diving into an
+PORTAL_CHANCE = 0.8             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
 MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
@@ -96,6 +96,22 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
                                 # slower - see test_deadline.py for why 32 was too
                                 # coarse: it let a slow node blow well past budget
                                 # before the next check even happened.
+
+# ---------- portals: gamble pool, minus the one we know is a trap ----------
+#
+# Crossing a portal edge lands us somewhere add_dir can't compute, so in
+# general we have no way to score what's on the other side - that risk is
+# unavoidable and stays exclusive to the aggressive style. But the *specific*
+# portal we ourselves just crossed is not actually a mystery: portal_id is
+# unique per pair of edges (see _Edges.__missing__ in helper.py), so
+# stepping through that exact id again is guaranteed - not just likely - to
+# put us back on the tile we just departed. Our own neck occupies that tile,
+# or is still close enough behind it, for roughly `length` rounds after we
+# leave, so re-entering it there is a guaranteed self-collision, not a gamble.
+
+LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
+LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
+
 # ---------- helpers ----------
 
 def gather_pearl_targets():
@@ -193,21 +209,6 @@ def open_step(pos, d):
         return None
     return nxt
 
-
-# ---------- portals: gamble pool, minus the one we know is a trap ----------
-#
-# Crossing a portal edge lands us somewhere add_dir can't compute, so in
-# general we have no way to score what's on the other side - that risk is
-# unavoidable and stays exclusive to the aggressive style. But the *specific*
-# portal we ourselves just crossed is not actually a mystery: portal_id is
-# unique per pair of edges (see _Edges.__missing__ in helper.py), so
-# stepping through that exact id again is guaranteed - not just likely - to
-# put us back on the tile we just departed. Our own neck occupies that tile,
-# or is still close enough behind it, for roughly `length` rounds after we
-# leave, so re-entering it there is a guaranteed self-collision, not a gamble.
-
-LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
-LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
 
 
 def portal_directions(pos, round_num):
