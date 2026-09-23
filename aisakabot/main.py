@@ -1,56 +1,3 @@
-"""
-Same pathfinding as safe_bot.py, except each dragon rolls its play style once,
-right after init(), and keeps it for its whole life:
-
-  ~90% AGGRESSIVE : skips the dead-end and danger tiers, beelines for pearls,
-                     splits as soon as it's long enough, and will occasionally
-                     dive through a portal on a hunch instead of pathing around.
-  ~10% SAFE       : the original tiered logic (dead ends, then danger, then
-                     pearls), never splits, and never risks a portal.
-
-Every dragon, regardless of style, still refuses a move that ends 1 tile from
-an enemy head, since that's an outright kill and never worth it. Portal dives
-are the one exception to that veto: we genuinely can't see what's on the other
-side of a portal, so there's nothing to check - it's a gamble kept exclusive
-to the aggressive style on purpose.
-
-Pathfinding to pearls (and pending pearl spawns) now runs a BFS over the
-visible 7x7 window instead of scoring moves by straight-line (Manhattan)
-distance. Manhattan distance ignores kelp walls, dragons blocking the way,
-and how the map wraps, so a move that "looks" closer in a straight line can
-actually be the long way round, or blocked entirely. BFS walks the real
-graph of passable edges and free tiles, so the distance used to rank moves
-is the true shortest-path distance. `dist()` itself stays Manhattan on
-purpose: it's used for proximity/threat checks (is_fatal, danger,
-ally_crowding) that genuinely mean "how close would this land me", not
-"what's the walking distance", so BFS would be the wrong tool there.
-
-Each dragon also keeps its own memory of what it has personally seen over
-its life (no sonar, nothing shared with other dragons):
-
-  - terrain: kelp and walls never move once placed, so any edge we've ever
-    seen stays trustworthy forever, letting BFS route past the edge of our
-    current 7x7 vision instead of stopping dead at it.
-  - teammates: aggressive dragons only chase pearls, so two siblings from
-    the same split can easily beeline for the same spot. Remembering where
-    we recently saw one of our own other dragons lets an aggressive
-    dragon's BFS steer its route away from that ground for a few rounds.
-    This is separate from, and complements, ally_crowding below: that one
-    only reacts to allies currently in view as a live tiebreaker, while
-    this affects which multi-step route BFS considers best in the first
-    place, using sightings that may already be out of view.
-  - the last portal we personally crossed: re-entering the exact same
-    portal we just came through is not a blind gamble like any other
-    portal - portal ids are unique per pair of edges, so the far side of
-    that specific edge is guaranteed to be the tile we just departed, and
-    our own neck is still sitting on or near that tile for roughly our
-    current length in rounds afterward. That one portal is excluded from
-    the gamble pool for that long; every other portal is still a genuine
-    unknown and stays fair game.
-
-This memory is scoped to one dragon's whole life; a freshly split child
-starts with none of it, since it runs its own init() from scratch.
-"""
 import helper as unswbc
 from helper import Direction, EdgeType
 import random
@@ -96,6 +43,11 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
                                 # slower - see test_deadline.py for why 32 was too
                                 # coarse: it let a slow node blow well past budget
                                 # before the next check even happened.
+
+TEAMMATE_MEMORY_FRESH_ROUNDS = 1   # how many rounds a teammate sighting is still worth avoiding
+
+KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
+TEAMMATE_MEMORY = {}   # (x, y) -> round we last saw one of our own other dragons standing there
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 #
@@ -382,12 +334,6 @@ def ally_crowding(pos, others):
 #   - teammates: recording where we recently saw one of our own other
 #     dragons lets an aggressive dragon's BFS steer around ground a sibling
 #     is probably already covering, instead of both racing for the same spot.
-
-TEAMMATE_MEMORY_FRESH_ROUNDS = 4   # how many rounds a teammate sighting is still worth avoiding
-
-KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
-TEAMMATE_MEMORY = {}   # (x, y) -> round we last saw one of our own other dragons standing there
-
 
 def remember_vision(round_num):
     """Fold everything currently visible into memory. Call once per turn,
@@ -695,15 +641,12 @@ def execute_turn() -> None:
 
 def main() -> None:
     global ct, game, AGGRESSIVE
-    rolled = False
     ct, game = unswbc.init()
-
+    progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
+    AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
+    AGGRESSIVE = random.random() < AGGRO_CHANCE                     # heavy subject to change
+                       
     while unswbc.update(ct, game):
-        if not rolled:
-            progress = game.get_round_num() / 250                            # 0 at start, 1 around round 350
-            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
-            AGGRESSIVE = random.random() < AGGRO_CHANCE                     # heavy subject to change
-            rolled = True                         
         if game.get_round_num() > 475:
             AGGRESSIVE = False
         execute_turn()
