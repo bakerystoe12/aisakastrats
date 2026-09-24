@@ -830,6 +830,7 @@ def enemy_nearby(others):
 
 def seppuku_conditions(others):
     max_length = 0
+    max_visible_length = 0
     if TEAMMATES:
         max_length = max(t["length"] for t in TEAMMATES.values())
     ally_found = False
@@ -837,7 +838,16 @@ def seppuku_conditions(others):
     for drag in others:
         if drag.get_team() == my_team and drag.is_head():
             ally_found = True
-    if ct.get_length() < (max_length / 1.5):
+
+            masked_id = drag.get_id() & ID_MASK
+
+            if masked_id in TEAMMATES:
+                ally_length = TEAMMATES[masked_id]["length"]
+                if ally_length > max_visible_length:
+                    max_visible_length = ally_length
+    max_avg = (max_length + max_visible_length) / 2
+    
+    if ct.get_length() < max_avg * 0.8:
         return ally_found
     return False
 
