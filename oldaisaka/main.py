@@ -23,13 +23,13 @@ SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
 
-BFS_CAP = 150              # was 300 - this is the dominant per-turn cost (see
+BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # bfs_targets), and pearl_dist_bfs reruns it fresh
                             # for every candidate direction, so this roughly
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.06   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -48,7 +48,6 @@ KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever onc
 
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
-#
 # Crossing a portal edge lands us somewhere add_dir can't compute, so in
 # general we have no way to score what's on the other side - that risk is
 # unavoidable and stays exclusive to the aggressive style. But the *specific*
@@ -63,6 +62,38 @@ LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
 random.seed(14)
 # ---------- helpers ----------
+OWN_BODY = deque()      # our own body, head first, tail last - exact, not remembered/stale
+OWN_BODY_SET = set()    # same positions, rebuilt each turn, for O(1) lookups
+
+
+def update_own_body():
+    """Rebuild exactly where our own body is right now, using only things we
+    fully control: our own head position (ground truth every turn) and our
+    own length (also ground truth). This never goes stale the way an
+    enemy's position or remembered kelp does - we're the only one who moves
+    our own head, so replaying "record today's head, keep only the most
+    recent `length` positions" exactly reconstructs the whole body, vision
+    or no vision.
+
+    Handles growth and shrinkage the same simple way: eating a pearl grows
+    length, so nothing gets popped and the old tail just stays put; a split
+    shrinks length, so the trailing (tail-ward) entries get popped - which
+    is exactly the chunk do_split hands off to the new child dragon.
+
+    A split-only turn (no move that turn) is the one case that needs a
+    guard: if the head hasn't actually moved, don't prepend a duplicate -
+    just truncate what's already known, so the neck segment we already had
+    right is preserved instead of getting overwritten by a fake copy of the
+    head.
+    """
+    here = (ct.get_position().x, ct.get_position().y)
+    if not OWN_BODY or OWN_BODY[0] != here:
+        OWN_BODY.appendleft(here)
+    length = ct.get_length()
+    while len(OWN_BODY) > length:
+        OWN_BODY.pop()
+    OWN_BODY_SET.clear()
+    OWN_BODY_SET.update(OWN_BODY)
 
 def stable_roll(key):
     """Deterministic value in [0,1) derived from `key`. Same key always
@@ -344,7 +375,11 @@ def remember_vision():
     for tile in ct.get_tiles():
         pos = tile.get_position()
         key = (pos.x, pos.y)
-        KNOWN_EDGES[key] = {d: tile.get_edge(d).get_edge_type() for d in Direction.get_direction_list()}
+        edges = {d: tile.get_edge(d).get_edge_type() for d in Direction.get_direction_list()}
+        KNOWN_EDGES[key] = edges
+        for d, edge_type in edges.items():
+            if edge_type == EdgeType.KELP:
+                add_kelp(edge_key(pos, d))   # sonar: remember it so we can tell teammates
 
 
 def known_edge_type(pos, d):
@@ -357,6 +392,8 @@ def known_edge_type(pos, d):
         return tile.get_edge(d).get_edge_type()
     edges = KNOWN_EDGES.get((pos.x, pos.y))
     if edges is None:
+        if edge_key(pos, d) in KELP_EDGES:
+            return EdgeType.KELP        # never seen it ourselves, but a teammate's sonar told us
         if AGGRESSIVE:
             return EdgeType.EMPTY
         return EdgeType.KELP        # unseen & safe -> untraversable, not a crash
@@ -364,11 +401,127 @@ def known_edge_type(pos, d):
 
 
 def known_occupied(pos):
-    """Whether pos currently holds a dragon. Only live vision can answer
-    this - a remembered tile's occupant could easily have moved on since we
-    last looked, so anything out of view is assumed clear."""
+    """Whether pos currently holds a dragon. Live vision is ground truth for
+    any dragon, ours or an enemy's, when pos is in view. Out of view, an
+    enemy's last-seen position is only a guess (it may well have moved), so
+    it's treated as clear - but our own body is the one exception: see
+    update_own_body, which reconstructs it exactly with no need for vision,
+    so it stays correct even off-screen."""
     tile = ct.get_tile(pos)
-    return tile is not None and tile.get_dragon() is not None
+    if tile is not None:
+        return tile.get_dragon() is not None
+    return (pos.x, pos.y) in OWN_BODY_SET
+
+
+# ---------- sonar: share our mode, length, id and kelp map with teammates ----------
+#
+# Every sonar is one 64-bit integer, packed like this (top bits first):
+#
+#   16 bits  magic tag   - sonar carries no sender/team info, so enemies can hear
+#                          us and we can hear them; the tag lets us ignore junk
+#    1 bit   mode        - 1 = aggressive, 0 = safe
+#    7 bits  length      - capped at 127
+#   12 bits  dragon id   - low 12 bits of the id
+#    2 bits  kelp count  - how many of the 2 kelp slots below are real (0-2)
+#   13 bits  kelp slot 1 \_ each = x (6 bits), y (6 bits), which edge (1 bit)
+#   13 bits  kelp slot 2 /   maps are at most 64x64, so 6 bits per coordinate
+#
+# A kelp "edge" sits between two tiles, so both tiles could describe it. To keep
+# one name per edge we always store it as the NORTH edge (0) or WEST edge (1) of
+# a tile - see edge_key().
+
+SONAR_MAGIC = 0xA15A
+REPORT_LAYOUT = [16, 1, 7, 12, 2, 13, 13]
+EDGE_LAYOUT = [6, 6, 1]
+KELP_PER_MSG = 2
+ID_MASK = (1 << 12) - 1
+
+SONAR3 = False          # set in main(): True only if helper.py has the protocol 3 sonar API
+KELP_EDGES = set()      # every kelp edge we know of (seen ourselves or heard from a teammate)
+KELP_LIST = []          # same edges, in a list so we can send them round-robin
+KELP_SEND_CURSOR = 0    # where in KELP_LIST the next message starts
+TEAMMATES = {}          # dragon id -> {"aggressive": bool, "length": int, "round": int}
+
+
+def pack(fields):
+    """[(value, bits), ...] -> one integer. First field ends up in the top bits."""
+    n = 0
+    for value, bits in fields:
+        n = (n << bits) | (value & ((1 << bits) - 1))
+    return n
+
+
+def unpack(n, widths):
+    """Reverse of pack: split n into fields of the given bit widths."""
+    out = []
+    for bits in reversed(widths):
+        out.append(n & ((1 << bits) - 1))
+        n >>= bits
+    out.reverse()
+    return out
+
+
+def edge_key(pos, d):
+    """One shared name for the edge you cross stepping d from pos: (x, y, 0) is
+    the north edge of tile (x, y), (x, y, 1) is its west edge. A south/east edge
+    is just the north/west edge of the neighbouring tile."""
+    if d == Direction.SOUTH or d == Direction.EAST:
+        pos = pos.add_dir(d)
+        d = d.get_opposite()
+    return (pos.x, pos.y, 0 if d == Direction.NORTH else 1)
+
+
+def add_kelp(key):
+    if key not in KELP_EDGES:
+        KELP_EDGES.add(key)
+        KELP_LIST.append(key)
+
+
+def next_kelp_chunk():
+    """The next KELP_PER_MSG kelp edges to send, cycling through everything we
+    know. Most sonars never reach a teammate, so we keep re-sending in a loop."""
+    global KELP_SEND_CURSOR
+    chunk = []
+    for _ in range(min(KELP_PER_MSG, len(KELP_LIST))):
+        chunk.append(KELP_LIST[KELP_SEND_CURSOR % len(KELP_LIST)])
+        KELP_SEND_CURSOR += 1
+    return chunk
+
+
+def encode_report(kelp_chunk):
+    slots = [pack(list(zip(k, EDGE_LAYOUT))) for k in kelp_chunk]
+    slots += [0] * (KELP_PER_MSG - len(slots))
+    return pack(list(zip(
+        [SONAR_MAGIC, int(AGGRESSIVE), min(ct.get_length(), 127),
+         ct.get_id() & ID_MASK, len(kelp_chunk), slots[0], slots[1]],
+        REPORT_LAYOUT)))
+
+
+def send_sonar_report():
+    """Call once per turn, after our move. Sends one report out of each side
+    (a sonar stops at the first thing it hits, so more directions = more chances
+    of reaching a teammate), each carrying a different slice of our kelp map."""
+    if not SONAR3:
+        return
+    for d in Direction.get_direction_list():
+        ct.send_sonar(d, encode_report(next_kelp_chunk()))
+
+
+def read_sonar(round_num):
+    """Parse everything that reached us since last turn. Call at the start of
+    the turn so any new kelp is already in the map before we plan a move."""
+    width, height = game.get_map_size()
+    for msg in ct.get_sonar_messages():
+        magic, aggressive, length, sender, count, *slots = unpack(msg, REPORT_LAYOUT)
+        if magic != SONAR_MAGIC:
+            continue                        # not one of ours
+        if sender == ct.get_id() & ID_MASK:
+            continue                        # our own sonar bounced back to us
+        TEAMMATES[sender] = {"aggressive": bool(aggressive), "length": length, "round": round_num}
+        for slot in slots[:count]:
+            x, y, horizontal = unpack(slot, EDGE_LAYOUT)
+            if x < width and y < height:    # ignore coordinates that can't be real
+                add_kelp((x, y, horizontal))
 
 
 # ---------- A* pathfinding ----------
@@ -615,7 +768,9 @@ def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
+    update_own_body()
     remember_vision()
+    read_sonar(round_num)
 
     if try_split(others):
         return
@@ -631,8 +786,9 @@ def execute_turn() -> None:
 # ---------- boilerplate ----------
 
 def main() -> None:
-    global ct, game, AGGRESSIVE
+    global ct, game, AGGRESSIVE, SONAR3
     ct, game = unswbc.init()
+    SONAR3 = hasattr(ct, "get_sonar_echoes")   # only the protocol 3 helper has this
     rolled = False
 
     
@@ -647,10 +803,11 @@ def main() -> None:
         if game.get_round_num() > 475: # Inside of turning into safe: Either suicide or kamikaze, this condition would depend on if enemies are nearby
             AGGRESSIVE = False
 
-        if ct.get_length() > 6:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 8:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
+        send_sonar_report()   # sonars fire after our action, so send after the move
         unswbc.end_turn()
 
 
