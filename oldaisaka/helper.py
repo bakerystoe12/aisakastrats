@@ -1,12 +1,15 @@
 import sys
 from enum import Enum
+from typing import NamedTuple
 
-INT_SIZE = 32
+INT_SIZE = 64
+PROTOCOL_MAJOR = 3
 game: "Game" = None
 ct: "Controller" = None
 
-UINT32_MIN = 0
-UINT32_MAX = (1 << INT_SIZE) - 1
+UINT64_MIN = 0
+UINT64_MAX = (1 << INT_SIZE) - 1
+UINT32_MAX = (1 << 32) - 1
 
 class Constants:
     """What the engine is fixed at: 500 rounds, a 7x7 window, length 3 at spawn, length 2 minimum."""
@@ -345,6 +348,13 @@ class _Edges(dict):
 _HORIZONTAL_EDGES = _Edges(True)
 _VERTICAL_EDGES = _Edges(False)
 
+class SonarEchoes(NamedTuple):
+    kelp: int = 0
+    ally: int = 0
+    ally_head: int = 0
+    enemy: int = 0
+    enemy_head: int = 0
+
 class Controller:
     """Your dragon: what it sees, how long it is, and the commands it sends this turn."""
     length: int = 0
@@ -361,6 +371,7 @@ class Controller:
         self.head = DragonPart(None, dragon_id, team, direction, True)
         self.vision = vision
         self.sonar_messages = list(sonar_messages) if sonar_messages is not None else []
+        self.sonar_echoes = SonarEchoes()
 
     def get_length(self) -> int:
         """Segments your dragon has, counting the head."""
@@ -444,16 +455,26 @@ class Controller:
         """Values that reached you since your last turn, in the order they were sent."""
         return self.sonar_messages[::]
 
-    def send_sonar(self, message: int) -> bool:
-        """Sends a value along your facing once this turn's action is done, and returns False if it is not an unsigned 32-bit integer."""
-        if not _is_uint32(message):
+    def get_sonar_echoes(self) -> SonarEchoes:
+        return self.sonar_echoes
+
+    def send_sonar(self, direction_or_message: Direction | int, message: int | None = None) -> bool:
+        if message is None:
+            return self._send_facing_sonar(direction_or_message)
+        if not isinstance(direction_or_message, Direction) or not _is_uint64(message):
+            return False
+        print(f"SONAR {direction_or_message.value} {message}")
+        return True
+
+    def _send_facing_sonar(self, message: int) -> bool:
+        if not _is_uint64(message) or message > UINT32_MAX:
             return False
         print(f"SONAR {message}")
         return True
 
-def _is_uint32(value: object) -> bool:
+def _is_uint64(value: object) -> bool:
     return (isinstance(value, int) and not isinstance(value, bool)
-            and UINT32_MIN <= value <= UINT32_MAX)
+            and UINT64_MIN <= value <= UINT64_MAX)
 
 def init() -> tuple[Controller, Game]:
     """Reads the spawn block and returns your (controller, game), which stay valid all match."""
@@ -494,7 +515,12 @@ def update(controller: Controller, game_state: Game) -> bool:
 
     # lazy parse vision
     # "x y hasPearl pearlIn" for each vision tile, row by row from the top left
-    tile_lines = [read() for _ in range(Constants.VISION_SIZE ** 2)]
+    first_tile_line = read()
+    controller.sonar_echoes = SonarEchoes()
+    if first_tile_line.startswith("ECHOES"):
+        controller.sonar_echoes = SonarEchoes(*map(int, first_tile_line.split()[1:]))
+        first_tile_line = read()
+    tile_lines = [first_tile_line] + [read() for _ in range(Constants.VISION_SIZE ** 2 - 1)]
     # "team dragonId x y facing isHead" for each dragon part in vision
     num_dragon_parts = int(read().split()[1])
     body_lines = [read() for _ in range(num_dragon_parts)]
@@ -510,4 +536,5 @@ def update(controller: Controller, game_state: Game) -> bool:
 
 def end_turn():
     """Ends the turn and flushes everything you printed."""
+    print(f"PROTOCOL {PROTOCOL_MAJOR}")
     print("ENDTURN", flush=True)
