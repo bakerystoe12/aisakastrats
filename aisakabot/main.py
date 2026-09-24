@@ -845,7 +845,7 @@ def seppuku_conditions(others):
                 ally_length = TEAMMATES[masked_id]["length"]
                 if ally_length > max_visible_length:
                     max_visible_length = ally_length
-    max_avg = (max_length + max_visible_length) / 2
+    max_avg = (max_length + max_visible_length + max_visible_length) / 3
 
     if ct.get_length() < max_avg * 0.8:
         return ally_found
