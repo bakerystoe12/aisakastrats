@@ -837,7 +837,7 @@ def seppuku_conditions(others):
     for drag in others:
         if drag.get_team() == my_team and drag.is_head():
             ally_found = True
-    if ct.get_length() < max_length / 1.2:
+    if ct.get_length() < (max_length / 1.5):
         return ally_found
     return False
 
