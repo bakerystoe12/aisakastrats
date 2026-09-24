@@ -202,6 +202,26 @@ def nearby_ally_count(others, radius=3):
             seen_ids.add(part.get_id())
     return len(seen_ids)
 
+def nearby_enemy_count(others, radius=3):  # counts nearby enemy dragons
+    here = ct.get_position()
+    my_team = ct.get_team()
+    seen_ids = set()
+    for part in others:
+        if part.get_team() == my_team:
+            continue
+        if part.get_id() in seen_ids:
+            continue
+        if dist(here, part.get_position()) <= radius:
+            seen_ids.add(part.get_id())
+    return len(seen_ids)
+
+def ratio(others):
+    ally = nearby_ally_count(others)
+    enemy = nearby_enemy_count(others)
+    if ally != 0:
+        return enemy / ally
+    else:
+        return 0
 
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around.
@@ -768,6 +788,13 @@ def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
+
+    enemy_ratio = ratio(others)
+    
+    if enemy_ratio > 2:
+        if ct.can_split(2):
+            ct.do_split(2)
+
     update_own_body()
     remember_vision()
     read_sonar(round_num)
@@ -775,7 +802,7 @@ def execute_turn() -> None:
     if try_split(others):
         return
 
-    if round_num > 450 and not enemy_nearby(others): # activate feeding
+    if round_num > 425 and not enemy_nearby(others): # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
@@ -810,7 +837,7 @@ def seppuku_conditions(others):
     for drag in others:
         if drag.get_team() == my_team and drag.is_head():
             ally_found = True
-    if ct.get_length() < max_length // 2:
+    if ct.get_length() < max_length / 1.2:
         return ally_found
     return False
 
@@ -827,7 +854,7 @@ def main() -> None:
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
+            progress = (game.get_round_num() - 1) / 350                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
