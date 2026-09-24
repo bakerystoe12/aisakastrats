@@ -23,7 +23,7 @@ SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
 
-BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
+BFS_CAP = 150              # was 300 - this is the dominant per-turn cost (see
                             # bfs_targets), and pearl_dist_bfs reruns it fresh
                             # for every candidate direction, so this roughly
                             # linearly scales the most expensive part of a turn.
@@ -34,7 +34,7 @@ TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
                             # "gave no valid action" timeout death.
-BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
+BFS_DEADLINE_CHECK_EVERY = 10   # nodes between deadline checks inside a BFS.
                                 # time.perf_counter() itself is cheap (~50-100ns),
                                 # so this stays a small fraction of normal per-node
                                 # cost, but keeps the worst-case overrun small even
