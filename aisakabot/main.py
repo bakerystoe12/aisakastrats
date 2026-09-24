@@ -15,7 +15,7 @@ SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
 PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
-MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
+MAX_NEARBY_ALLIES_TO_SPLIT = 2    # skip splitting if more than this many other allies are close
 
 SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
@@ -23,13 +23,13 @@ SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
 
-BFS_CAP = 150              # was 300 - this is the dominant per-turn cost (see
+BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # bfs_targets), and pearl_dist_bfs reruns it fresh
                             # for every candidate direction, so this roughly
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -778,6 +778,8 @@ def choose_direction(others, round_num, deadline=None):
         safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, others)}
         if safe_from_death:
             moves = safe_from_death
+        else:
+            return None
 
     # tier 2: drop moves into pockets too small for us - applies to both
     # styles, since walking into a dead end is never useful, only risky
@@ -854,7 +856,7 @@ def main() -> None:
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 400                            # 1 at start, 0.2 around round 400
+            progress = (game.get_round_num() - 1) / 500                            # 1 at start, 0.2 around round 400
             AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
@@ -862,7 +864,7 @@ def main() -> None:
         if game.get_round_num() > 475: # Inside of turning into safe: Either suicide or kamikaze, this condition would depend on if enemies are nearby
             AGGRESSIVE = False
 
-        if ct.get_length() > 5:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() >= 5:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
