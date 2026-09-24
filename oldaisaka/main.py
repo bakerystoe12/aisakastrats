@@ -29,7 +29,7 @@ BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -202,6 +202,28 @@ def nearby_ally_count(others, radius=3):
             seen_ids.add(part.get_id())
     return len(seen_ids)
 
+def nearby_enemy_count(others, radius=3):  # counts nearby enemy dragons
+    here = ct.get_position()
+    my_team = ct.get_team()
+    seen_ids = set()
+    for part in others:
+        if part.get_team() == my_team:
+            continue
+        if part.get_id() in seen_ids:
+            continue
+        if dist(here, part.get_position()) <= radius:
+            seen_ids.add(part.get_id())
+    return len(seen_ids)
+
+def ratio(others):
+    ally = nearby_ally_count(others)
+    enemy = nearby_enemy_count(others)
+    if ally != 0:
+        return enemy / ally
+    elif enemy > 2:
+        return 3
+    else:
+        return 0
 
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around.
@@ -612,6 +634,156 @@ def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
             best = turns
     return best
 
+# ---------- kamikaze: aggressive-only kill sprint, gated on trade value ----------
+#
+# stepping onto another dragon's head kills both of you (see DragonPart.is_head's
+# own docstring) - a body segment doesn't have that guarantee, so a kamikaze run
+# only ever targets a visible enemy HEAD, never a body tile.
+#
+# The gate is the trade itself, not the round number: giving up our own
+# dragon is only worth it if the enemy loses at least as much as we do.
+#
+# Caveat worth checking against a real replay before trusting this: get_id()'s
+# docstring says your id IS your place in the turn order within a round, which
+# means dragons likely don't move simultaneously. If we act before the target
+# this round, the head position we see right now may not be where they still
+# are once their own turn resolves - they could just move off it. If we act
+# after them, their reported position is already final for the round. This
+# function paths onto the CURRENTLY reported head position either way; if kills
+# aren't landing in testing, that turn-order gap is the first thing to check.
+
+KAMIKAZE_MIN_LENGTH_RATIO = 1.1   # only trade if the enemy's VISIBLE length is at
+                                    # least this multiple of ours. 1.0 = break-even
+                                    # or better; raise it (e.g. 1.5) to only take
+                                    # trades that are clearly in our favor.
+
+
+def nearest_enemy_head(others):
+    """Closest visible enemy head, or None. Never a body segment - see the
+    section note above for why."""
+    here = ct.get_position()
+    my_team = ct.get_team()
+    heads = [p for p in others if p.is_head() and p.get_team() != my_team]
+    if not heads:
+        return None
+    return min(heads, key=lambda p: dist(here, p.get_position()))
+
+
+def visible_enemy_length(target, others):
+    """How many segments of target's dragon we can currently see - a LOWER
+    bound on their true length, since any part of their body sitting
+    outside our 7x7 window just doesn't get counted. That undercount is the
+    safe direction for this decision: if even what we can see already looks
+    break-even or better for us, the real trade can only be as good or
+    better than it looks, never worse."""
+    return sum(1 for p in others if p.get_id() == target.get_id())
+
+
+def trade_is_favorable(target, others):
+    """Whether killing target is worth losing our own dragon for. Compares
+    our exact length (ground truth) against the enemy's visible segment
+    count. We only commit when what we can already see makes the trade
+    look break-even or better - we have no way to know a trade that looks
+    bad is secretly good, only that one that already looks good might be
+    even better once their off-screen segments are counted too."""
+    our_length = ct.get_length()
+    their_visible = visible_enemy_length(target, others)
+    return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO
+
+
+def path_onto(here, target_pos, cap=BFS_CAP, deadline=None):
+    """A* from here to target_pos specifically - not astar_targets above,
+    because that function refuses to ever step onto ANY occupied tile, and
+    the whole point here is that target_pos IS occupied (the enemy head).
+    Every other tile along the way is still blocked exactly as normal -
+    kelp, any other dragon's body, map edge - only target_pos itself gets
+    the exception, and only as the literal last step, so this can't be used
+    to plow through some unrelated third dragon to reach the target.
+
+    Returns the ordered list of Directions to take, or None if target_pos
+    isn't reachable within cap/deadline."""
+    if here == target_pos:
+        return []
+
+    came_from = {}
+    dist_to = {here: 0}
+
+    def h(pos):
+        return dist(pos, target_pos)
+
+    counter = 0
+    heap = [(h(here), 0, counter, here)]
+    visited = set()
+    popped = 0
+
+    while heap:
+        f, g, _, pos = heapq.heappop(heap)
+        if pos in visited:
+            continue
+        visited.add(pos)
+
+        if pos == target_pos:
+            path = []
+            cur = pos
+            while cur != here:
+                cur, d = came_from[cur]
+                path.append(d)
+            path.reverse()
+            return path
+
+        if deadline is not None:
+            popped += 1
+            if popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
+                return None
+        if len(dist_to) >= cap:
+            return None
+
+        for d in Direction.get_direction_list():
+            if known_edge_type(pos, d) != EdgeType.EMPTY:
+                continue
+            nxt = pos.add_dir(d)
+            if nxt != target_pos and known_occupied(nxt):
+                continue   # anyone else's body still blocks a detour through it
+            new_g = g + 1
+            if nxt not in dist_to or new_g < dist_to[nxt]:
+                dist_to[nxt] = new_g
+                came_from[nxt] = (pos, d)
+                counter += 1
+                heapq.heappush(heap, (new_g + h(nxt), new_g, counter, nxt))
+
+    return None
+
+
+def kamikaze_charge(others, deadline=None):
+    """Aggressive-only: if a visible enemy head can be reached and hit in a
+    single sprint this turn, AND the trade looks favorable, take it -
+    deliberately spending ourselves to remove an enemy that's worth at
+    least as much as we are. Returns True if it sent a sprint this turn,
+    else False (nothing to do, nothing reachable in one turn, or the trade
+    doesn't look worth it)."""
+    if not AGGRESSIVE:
+        return False
+
+    target = nearest_enemy_head(others)
+    if target is None:
+        return False
+
+    if not trade_is_favorable(target, others):
+        return False
+
+    here = ct.get_position()
+    path = path_onto(here, target.get_position(), deadline=deadline)
+    if not path:
+        return False
+
+    # a sprint of n steps costs n - 1 segments, so length must exceed n
+    if len(path) >= ct.get_length():
+        return False
+
+    ct.make_moves(path)
+    return True
+
+
 # ---------- decision ----------
 
 def cheap_fallback_direction(moves, others, targets):
@@ -768,6 +940,14 @@ def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
+
+    enemy_ratio = ratio(others)
+    
+    if enemy_ratio > 2:
+        if ct.can_split(2):
+            ct.do_split(2)
+            return
+
     update_own_body()
     remember_vision()
     read_sonar(round_num)
@@ -775,7 +955,10 @@ def execute_turn() -> None:
     if try_split(others):
         return
 
-    if round_num > 450 and not enemy_nearby(others): # activate feeding
+    if kamikaze_charge(others, deadline=deadline):
+        return
+
+    if round_num > 425 and not enemy_nearby(others): # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
@@ -803,6 +986,7 @@ def enemy_nearby(others):
 
 def seppuku_conditions(others):
     max_length = 0
+    max_visible_length = 0
     if TEAMMATES:
         max_length = max(t["length"] for t in TEAMMATES.values())
     ally_found = False
@@ -810,7 +994,16 @@ def seppuku_conditions(others):
     for drag in others:
         if drag.get_team() == my_team and drag.is_head():
             ally_found = True
-    if ct.get_length() < max_length // 2:
+
+            masked_id = drag.get_id() & ID_MASK
+
+            if masked_id in TEAMMATES:
+                ally_length = TEAMMATES[masked_id]["length"]
+                if ally_length > max_visible_length:
+                    max_visible_length = ally_length
+    max_avg = (max_length + max_visible_length + max_visible_length) / 3
+
+    if ct.get_length() < max_avg * 0.8:
         return ally_found
     return False
 
@@ -827,12 +1020,12 @@ def main() -> None:
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 250                            # 0 at start, 1 around round 350
+            progress = (game.get_round_num() - 1) / 350                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if ct.get_length() > 8:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 5:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
