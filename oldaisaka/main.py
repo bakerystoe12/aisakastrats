@@ -23,13 +23,13 @@ SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
 
-BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
+BFS_CAP = 150              # was 300 - this is the dominant per-turn cost (see
                             # bfs_targets), and pearl_dist_bfs reruns it fresh
                             # for every candidate direction, so this roughly
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.018   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.06   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -373,7 +373,7 @@ def known_occupied(pos):
 
 # ---------- A* pathfinding ----------
 
-def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None):
+def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, avoid_fatal=True):
     """A* from `here` over the known passable-edge graph (same rules as the
     old BFS: edge must be known EMPTY, landing tile not occupied, not
     is_fatal, portals skipped since crossing one doesn't land at add_dir's
@@ -426,7 +426,7 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None):
             nxt = pos.add_dir(d)
             if known_occupied(nxt):
                 continue
-            if is_fatal(nxt, others):
+            if avoid_fatal and is_fatal(nxt, others):
                 continue
             new_g = g + 1
             if nxt not in dist_to or new_g < dist_to[nxt]:
@@ -437,7 +437,7 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None):
     return dist_to
 
 
-def pearl_dist_astar(pos, targets, others, deadline=None):
+def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
     """Real shortest-path turns-until-collectable for the best target, using
     A* run fresh from `pos` (the tile this move would land on), same
     per-direction reasoning as the old pearl_dist_bfs: a single search from
@@ -448,7 +448,7 @@ def pearl_dist_astar(pos, targets, others, deadline=None):
     if not targets:
         return 0
     target_positions = [p for p, _ in targets]
-    dist_to = astar_targets(pos, others, target_positions, deadline=deadline)
+    dist_to = astar_targets(pos, others, target_positions, deadline=deadline, avoid_fatal=avoid_fatal)
     best = None
     for target_pos, pt in targets:
         if target_pos in dist_to:
@@ -496,10 +496,15 @@ def choose_direction(others, round_num, deadline=None):
     if not moves:
         return None
 
-    # hard veto: drop anything that ends next to an enemy head, for every dragon
-    safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, others)}
-    if safe_from_death:
-        moves = safe_from_death
+    # hard veto: drop anything that ends next to an enemy head. Safe dragons
+    # still refuse this outright, since a head-on hit kills both and they
+    # have nothing to gain from contesting the space. Aggressive dragons
+    # accept the risk instead of ceding ground - many maps punish giving up
+    # space this way, so they play the gamble rather than back off.
+    if not AGGRESSIVE:
+        safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, others)}
+        if safe_from_death:
+            moves = safe_from_death
 
     # tier 2: drop moves into pockets too small for us - applies to both
     # styles, since walking into a dead end is never useful, only risky
@@ -523,15 +528,23 @@ def choose_direction(others, round_num, deadline=None):
         return cheap_fallback_direction(moves, others, targets)
 
     if AGGRESSIVE:
+        # skip danger, and skip the enemy-head veto too (avoid_fatal=False)
+        # so routing doesn't silently detour around contested ground either -
+        # go straight for the nearest pearl among whatever's left, using the
+        # real A* shortest-path distance, breaking ties toward whichever
+        # option gives our own teammates more room.
         def key(d):
             p = moves[d]
-            return (pearl_dist_astar(p, targets, others, deadline=deadline),
+            return (pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=False),
                      ally_crowding(p, others), d != facing, random.random())
     else:
+        # tiers 3 and 4: least danger first (danger already down-weights
+        # enemy-head proximity gradually), then closest to a pearl by real
+        # A* shortest-path distance, still avoiding fatal tiles in routing
         def key(d):
             p = moves[d]
             return (danger(p, others),
-                     pearl_dist_astar(p, targets, others, deadline=deadline),
+                     pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=True),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -631,10 +644,7 @@ def main() -> None:
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if AGGRESSIVE == True and game.get_round_num() % 150 == 0 and game.get_round_num() != 0:  # 50/50 turning bots into safe every 100 rounds
-            AGGRESSIVE = stable_roll(ct.get_id()) < 0.2
-
-        if game.get_round_num() > 475:
+        if game.get_round_num() > 475: # Inside of turning into safe: Either suicide or kamikaze, this condition would depend on if enemies are nearby
             AGGRESSIVE = False
 
         if ct.get_length() > 6:    # Prevention from desperate split child from becoming aggressive
