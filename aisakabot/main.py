@@ -220,6 +220,8 @@ def ratio(others):
     enemy = nearby_enemy_count(others)
     if ally != 0:
         return enemy / ally
+    elif enemy > 2:
+        return 3
     else:
         return 0
 
@@ -944,6 +946,7 @@ def execute_turn() -> None:
     if enemy_ratio > 2:
         if ct.can_split(2):
             ct.do_split(2)
+            return
 
     update_own_body()
     remember_vision()
