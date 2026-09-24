@@ -29,7 +29,7 @@ BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -846,7 +846,7 @@ def seppuku_conditions(others):
                 if ally_length > max_visible_length:
                     max_visible_length = ally_length
     max_avg = (max_length + max_visible_length) / 2
-    
+
     if ct.get_length() < max_avg * 0.8:
         return ally_found
     return False
