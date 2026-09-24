@@ -775,12 +775,44 @@ def execute_turn() -> None:
     if try_split(others):
         return
 
+    if round_num > 450 and not enemy_nearby(others): # activate feeding
+        if seppuku_conditions(others):
+            suicide()
+            return
+
     d = choose_direction(others, round_num, deadline=deadline)
+
     if d is None:
         d = last_resort(round_num)
         if d is None:
             return   # last_resort already split; no move to send
     ct.make_move(d)
+
+
+def suicide(): # literally just makes the bot kills itself
+    opposite = ct.get_dir().get_opposite()
+    ct.make_move(opposite)
+    return 
+
+def enemy_nearby(others):
+    my_team = ct.get_team()
+    for drag in others:
+        if drag.get_team() != my_team:
+            return True
+    return False
+
+def seppuku_conditions(others):
+    max_length = 0
+    if TEAMMATES:
+        max_length = max(t["length"] for t in TEAMMATES.values())
+    ally_found = False
+    my_team = ct.get_team()
+    for drag in others:
+        if drag.get_team() == my_team and drag.is_head():
+            ally_found = True
+    if ct.get_length() < max_length // 2:
+        return ally_found
+    return False
 
 
 # ---------- boilerplate ----------
@@ -799,9 +831,6 @@ def main() -> None:
             AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
-
-        if game.get_round_num() > 475: # Inside of turning into safe: Either suicide or kamikaze, this condition would depend on if enemies are nearby
-            AGGRESSIVE = False
 
         if ct.get_length() > 8:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
