@@ -34,7 +34,7 @@ TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
                             # "gave no valid action" timeout death.
-BFS_DEADLINE_CHECK_EVERY = 10   # nodes between deadline checks inside a BFS.
+BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
                                 # time.perf_counter() itself is cheap (~50-100ns),
                                 # so this stays a small fraction of normal per-node
                                 # cost, but keeps the worst-case overrun small even
@@ -540,13 +540,13 @@ def danger(pos, others):
         weight = 1.0
         if part.is_head():
             if d <= 1:
-                total += 2 * weight
+                total += 4 * weight
             elif d == 2:
-                total += 1 * weight
+                total += 3 * weight
             elif d == 3:
-                total += 0.5 * weight
+                total += 2 * weight
         elif d <= 1:
-            total += 0.5 * weight
+            total += 1 * weight
     return total
 
 
@@ -854,7 +854,7 @@ def main() -> None:
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 250                            # 0 at start, 1 around round 350
+            progress = (game.get_round_num() - 1) / 400                            # 1 at start, 0.2 around round 400
             AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
@@ -862,7 +862,7 @@ def main() -> None:
         if game.get_round_num() > 475: # Inside of turning into safe: Either suicide or kamikaze, this condition would depend on if enemies are nearby
             AGGRESSIVE = False
 
-        if ct.get_length() > 8:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 5:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
