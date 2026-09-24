@@ -29,7 +29,7 @@ BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.055   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -63,6 +63,38 @@ LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
 random.seed(14)
 # ---------- helpers ----------
+OWN_BODY = deque()      # our own body, head first, tail last - exact, not remembered/stale
+OWN_BODY_SET = set()    # same positions, rebuilt each turn, for O(1) lookups
+
+
+def update_own_body():
+    """Rebuild exactly where our own body is right now, using only things we
+    fully control: our own head position (ground truth every turn) and our
+    own length (also ground truth). This never goes stale the way an
+    enemy's position or remembered kelp does - we're the only one who moves
+    our own head, so replaying "record today's head, keep only the most
+    recent `length` positions" exactly reconstructs the whole body, vision
+    or no vision.
+
+    Handles growth and shrinkage the same simple way: eating a pearl grows
+    length, so nothing gets popped and the old tail just stays put; a split
+    shrinks length, so the trailing (tail-ward) entries get popped - which
+    is exactly the chunk do_split hands off to the new child dragon.
+
+    A split-only turn (no move that turn) is the one case that needs a
+    guard: if the head hasn't actually moved, don't prepend a duplicate -
+    just truncate what's already known, so the neck segment we already had
+    right is preserved instead of getting overwritten by a fake copy of the
+    head.
+    """
+    here = (ct.get_position().x, ct.get_position().y)
+    if not OWN_BODY or OWN_BODY[0] != here:
+        OWN_BODY.appendleft(here)
+    length = ct.get_length()
+    while len(OWN_BODY) > length:
+        OWN_BODY.pop()
+    OWN_BODY_SET.clear()
+    OWN_BODY_SET.update(OWN_BODY)
 
 def stable_roll(key):
     """Deterministic value in [0,1) derived from `key`. Same key always
@@ -370,11 +402,16 @@ def known_edge_type(pos, d):
 
 
 def known_occupied(pos):
-    """Whether pos currently holds a dragon. Only live vision can answer
-    this - a remembered tile's occupant could easily have moved on since we
-    last looked, so anything out of view is assumed clear."""
+    """Whether pos currently holds a dragon. Live vision is ground truth for
+    any dragon, ours or an enemy's, when pos is in view. Out of view, an
+    enemy's last-seen position is only a guess (it may well have moved), so
+    it's treated as clear - but our own body is the one exception: see
+    update_own_body, which reconstructs it exactly with no need for vision,
+    so it stays correct even off-screen."""
     tile = ct.get_tile(pos)
-    return tile is not None and tile.get_dragon() is not None
+    if tile is not None:
+        return tile.get_dragon() is not None
+    return (pos.x, pos.y) in OWN_BODY_SET
 
 
 # ---------- sonar: share our mode, length, id and kelp map with teammates ----------
@@ -732,6 +769,7 @@ def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
+    update_own_body()
     remember_vision()
     read_sonar(round_num)
 
