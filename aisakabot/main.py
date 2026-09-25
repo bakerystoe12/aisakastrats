@@ -691,7 +691,7 @@ def trade_is_favorable(target, others):
     return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO
 
 
-def path_onto(here, target_pos, cap=BFS_CAP, deadline=None):
+def path_onto(here, target_pos, cap=49, deadline=None):
     """A* from here to target_pos specifically - not astar_targets above,
     because that function refuses to ever step onto ANY occupied tile, and
     the whole point here is that target_pos IS occupied (the enemy head).

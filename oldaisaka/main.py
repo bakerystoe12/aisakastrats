@@ -851,7 +851,7 @@ def choose_direction(others, round_num, deadline=None):
     # legal, pearl-leaning move and get out
     if deadline is not None and time.perf_counter() >= deadline:
         return cheap_fallback_direction(moves, others, targets)
-
+    
     if AGGRESSIVE:
         # skip danger, and skip the enemy-head veto too (avoid_fatal=False)
         # so routing doesn't silently detour around contested ground either -
@@ -940,14 +940,6 @@ def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     others = other_dragon_parts()
-
-    enemy_ratio = ratio(others)
-    
-    if enemy_ratio > 2:
-        if ct.can_split(2):
-            ct.do_split(2)
-            return
-
     update_own_body()
     remember_vision()
     read_sonar(round_num)
@@ -958,7 +950,7 @@ def execute_turn() -> None:
     if kamikaze_charge(others, deadline=deadline):
         return
 
-    if round_num > 425 and not enemy_nearby(others): # activate feeding
+    if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
@@ -1020,12 +1012,12 @@ def main() -> None:
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 350                            # 0 at start, 1 around round 350
-            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                    # 100% -> floors at 40%
+            progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
+            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if ct.get_length() > 6:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 5 and game.get_round_num() > 10:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
