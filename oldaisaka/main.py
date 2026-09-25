@@ -856,6 +856,7 @@ def choose_direction(others, round_num, deadline=None):
     # already out of time - don't start A* scoring at all, just take a
     # legal, pearl-leaning move and get out
     if deadline is not None and time.perf_counter() >= deadline:
+        ct.output_log("timed out")
         return cheap_fallback_direction(moves, others, targets)
     
     if AGGRESSIVE:

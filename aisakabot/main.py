@@ -202,35 +202,12 @@ def nearby_ally_count(others, radius=3):
             seen_ids.add(part.get_id())
     return len(seen_ids)
 
-def nearby_enemy_count(others, radius=3):  # counts nearby enemy dragons
-    here = ct.get_position()
-    my_team = ct.get_team()
-    seen_ids = set()
-    for part in others:
-        if part.get_team() == my_team:
-            continue
-        if part.get_id() in seen_ids:
-            continue
-        if dist(here, part.get_position()) <= radius:
-            seen_ids.add(part.get_id())
-    return len(seen_ids)
-
-def ratio(others):
-    ally = nearby_ally_count(others)
-    enemy = nearby_enemy_count(others)
-    if ally != 0:
-        return enemy / ally
-    elif enemy > 2:
-        return 3
-    else:
-        return 0
-
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around.
     Used for proximity/threat checks (is_fatal, danger, ally_crowding), and
     as pearl_dist's fallback when BFS can't confirm a real path - see
     bfs_targets and pearl_dist_bfs below for the actual pathfinding."""
-    w, h = game.get_map_size()
+    w, h = WIDTH, HEIGHT
     dx = abs(a.x - b.x)
     dx = min(dx, w - dx)
     dy = abs(a.y - b.y)
@@ -856,6 +833,7 @@ def choose_direction(others, round_num, deadline=None):
     # already out of time - don't start A* scoring at all, just take a
     # legal, pearl-leaning move and get out
     if deadline is not None and time.perf_counter() >= deadline:
+        ct.output_log("timed out")
         return cheap_fallback_direction(moves, others, targets)
     
     if AGGRESSIVE:
@@ -938,7 +916,18 @@ def last_resort(round_num):
 
     if desperate_split():
         return None   # split used the turn; nothing left to move
-
+    
+    for d in Direction.get_direction_list():
+        nxt = here.add_dir(d)
+        tile = ct.get_tile(nxt)
+    
+        if tile is not None:
+            dragon = tile.get_dragon()
+        
+            if dragon is not None:
+                if dragon.get_team() == ct.get_team() and dragon.is_head():
+                    suicide()
+                    return None
     return ct.get_dir()   # truly nothing left to try
 
 
@@ -1013,7 +1002,10 @@ def main() -> None:
     ct, game = unswbc.init()
     SONAR3 = hasattr(ct, "get_sonar_echoes")   # only the protocol 3 helper has this
     rolled = False
-
+    w, h = game.get_map_size()
+    global WIDTH, HEIGHT
+    WIDTH = w
+    HEIGHT = h
     
     while unswbc.update(ct, game):
         
