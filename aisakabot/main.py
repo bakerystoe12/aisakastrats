@@ -1017,7 +1017,7 @@ def main() -> None:
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if ct.get_length() > 5 and game.get_round_num() > 10:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 5 and game.get_round_num() > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
