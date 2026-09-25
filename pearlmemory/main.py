@@ -1,50 +1,6 @@
 import helper as unswbc
 from helper import Direction, EdgeType
 import random
-
-ct: unswbc.Controller
-game: unswbc.Game
-
-# Seed so we get the same random generator every time.
-random.seed(0)
-
-def execute_turn() -> None:
-    """Step onto the first open neighbouring tile."""
-    here = ct.get_position()
-    here_tile = ct.get_tile(here)
-
-    directions = Direction.get_direction_list()
-    random.shuffle(directions)
-
-    for direction in directions:
-        
-        edge = here_tile.get_edge(direction).get_edge_type()
-        if edge == EdgeType.KELP:
-            continue
-
-        ahead = ct.get_tile(here.add_dir(direction))
-        if ahead.get_dragon() is not None:
-            continue
-
-        ct.output_log("Moving in", direction.value)
-        ct.make_move(direction)
-        return
-
-    ct.make_move(Direction.NORTH)
-
-def main() -> None:
-    global ct, game
-    ct, game = unswbc.init()
-
-    while unswbc.update(ct, game):
-        execute_turn()
-        unswbc.end_turn()
-
-if __name__ == "__main__":
-    main()
-import helper as unswbc
-from helper import Direction, EdgeType
-import random
 import time
 from collections import deque
 import hashlib
@@ -90,16 +46,24 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
 
-DEAD_PEARL_TILES = set()   # (x, y) tiles confirmed to never spawn a pearl
-                            # (pearl_time == -1) - permanent once seen, exactly
-                            # like kelp, so once we've laid eyes on one we never
-                            # need to re-check it
+# ---------- region-size pearl memory (local only, never sent over sonar) ----------
+#
+# Vision is only 7x7, so a single dragon can't hold a per-tile pearl history
+# for the whole map cheaply. Instead we bucket the map into REGION_SIZE x
+# REGION_SIZE squares and remember one running count per region: how many
+# distinct pearls we've personally seen spawn there over this dragon's life.
+# That's small (at most ~(64/REGION_SIZE)^2 entries) and just needs to be
+# "which parts of the map have paid off before", not exact positions - so it
+# stays a cheap tiebreaker for wandering, never a replacement for the real
+# per-turn targets in gather_pearl_targets. Purely local memory - not part of
+# the sonar protocol, unlike KELP_EDGES.
+REGION_SIZE = 3
+REGION_PEARL_SCORE = {}      # (rx, ry) -> distinct pearls seen there so far
+_COUNTED_PEARL_TILES = set()  # which live pearls we've already counted, so a
+                               # pearl sitting still for many turns isn't recounted
+BARREN_TILES = set()   # tiles whose pearl_time is -1 (never spawn a pearl) - remembered forever
+DEAD_ENDS = set()      # tiles with at most one open (non-kelp, non-portal) edge - cul-de-sacs
 
-# Note: dead-pearl tiles are deliberately NOT penalized in real pathfinding
-# (astar_targets) - a dead tile is just ordinary ground once a target
-# exists, so treating it as costly there only makes pathing to a real pearl
-# slower than the honest shortest path. Dead-zone avoidance only ever
-# applies to undirected wandering (see dead_zone_density, escape_dead_zone).
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 # Crossing a portal edge lands us somewhere add_dir can't compute, so in
@@ -229,20 +193,6 @@ def pearl_dist(pos, targets):
     if not targets:
         return 0
     return min(max(dist(pos, p), t) for p, t in targets)
-
-def dead_zone_density(pos, radius=3):
-    """How much confirmed-dead pearl ground sits near pos, among tiles
-    currently in view. Bounded by the 7x7 vision window rather than
-    scanning all of DEAD_PEARL_TILES, so this stays cheap no matter how
-    much a long-lived dragon has accumulated in memory. Only meaningful
-    near the edge of a dead zone - see escape_dead_zone below for what
-    handles being deep inside one, where this goes flat."""
-    count = 0
-    for tile in ct.get_tiles():
-        tp = tile.get_position()
-        if dist(pos, tp) <= radius and (tp.x, tp.y) in DEAD_PEARL_TILES:
-            count += 1
-    return count
 
 def has_room_to_split():
     """Flood-fills the open space around us (kelp and other dragons both
@@ -377,18 +327,24 @@ def is_fatal(pos, others):
 
 # ---------- tier 2: dead ends (safe dragons only) ----------
 
-def room(start, came_from, cap):
+def room(start, came_from, cap, deadline=None):
     """Flood fill from start over free tiles in view. Returns how many tiles are
-    reachable, stopping at cap. Reaching the edge of our view counts as
-    'plenty of room' because we can't see what lies beyond."""
+    reachable, stopping at cap, or early if deadline is hit (returns the
+    count reached so far, which tier 2 then treats as an underestimate -
+    safe, since an underestimate can only make a spot look tighter than it
+    is, never falsely roomy)."""
     seen = {came_from, start}
     queue = deque([start])
     count = 0
+    popped = 0
     while queue:
         pos = queue.popleft()
         count += 1
         if count >= cap:
             return cap
+        popped += 1
+        if deadline is not None and popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
+            return count
         for d in Direction.get_direction_list():
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
@@ -459,6 +415,19 @@ def ally_crowding(pos, others):
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
 
+def region_key(pos):
+    """Which REGION_SIZE x REGION_SIZE bucket a position falls in."""
+    return (pos.x // REGION_SIZE, pos.y // REGION_SIZE)
+
+
+def avoid_penalty(pos):
+    """1 if pos is a remembered dead-end or a permanently barren (pearl_time
+    == -1) tile, else 0. A soft tiebreaker only - it never overrides safety
+    or an actual pearl target, it just nudges a dragon off ground that has
+    already proven to never pay off."""
+    return 1 if pos in DEAD_ENDS or pos in BARREN_TILES else 0
+
+
 def remember_vision():
     """Fold everything currently visible into memory. Call once per turn,
     before making any decisions, so this turn's own tiles are included."""
@@ -470,8 +439,22 @@ def remember_vision():
         for d, edge_type in edges.items():
             if edge_type == EdgeType.KELP:
                 add_kelp(edge_key(pos, d))   # sonar: remember it so we can tell teammates
+
         if tile.get_pearl_time() == -1:
-            DEAD_PEARL_TILES.add(key)
+            BARREN_TILES.add(key)
+        elif tile.has_pearl():
+            if key not in _COUNTED_PEARL_TILES:
+                r = region_key(pos)
+                REGION_PEARL_SCORE[r] = REGION_PEARL_SCORE.get(r, 0) + 1
+                _COUNTED_PEARL_TILES.add(key)
+        else:
+            _COUNTED_PEARL_TILES.discard(key)
+
+        open_exits = sum(1 for t in edges.values() if t == EdgeType.EMPTY)
+        if open_exits <= 1:
+            DEAD_ENDS.add(key)
+        else:
+            DEAD_ENDS.discard(key)
 
 
 def known_edge_type(pos, d):
@@ -631,14 +614,12 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
     remaining cost and A* still finds genuine shortest paths - it just
     reaches them by exploring far less of the map than a flood-fill does.
 
-    Dead-pearl tiles (DEAD_PEARL_TILES) are NOT penalized here - once a real
-    target exists, dead ground is just ordinary walkable ground, exactly as
-    fast to cross as anything else, since the tile itself isn't dangerous
-    or slow in the actual game. Penalizing it here would only ever make
-    pathing to a genuine target slower than the true shortest path, losing
-    ground to any opponent that just takes the honest route. Dead-zone
-    avoidance is scoped instead to undirected wandering with no target at
-    all - see dead_zone_density and escape_dead_zone below.
+    This is the actual fix for the timeout: the old BFS kept expanding
+    until it hit `cap` tiles even after every pearl we cared about was
+    already found. This stops the instant every target in
+    `target_positions` has been settled with its optimal distance (or cap/
+    deadline is hit), so a nearby pearl no longer costs a full map-sized
+    search to find.
 
     Returns dist_to: {pos: shortest known step count from `here`}."""
     dist_to = {here: 0}
@@ -706,64 +687,6 @@ def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
             best = turns
     return best
 
-
-def escape_dead_zone(here, others, deadline=None, cap=BFS_CAP):
-    """When there's no live pearl target and we're standing on confirmed-dead
-    ground, search outward through everything we've ever seen (not just
-    the current 7x7 window) for the nearest tile we haven't confirmed dead,
-    and return the first-step direction toward it. Unlike dead_zone_density
-    - which only reads live vision and goes flat once the whole window
-    reads uniformly dead - this walks our full remembered map, so it can
-    still find a way out even when everything currently visible looks the
-    same. An unseen tile counts as "not dead": we only mark a tile in
-    DEAD_PEARL_TILES once we've actually watched it fail to spawn, so
-    unexplored ground is the most promising direction to head, not a risk.
-
-    Returns None if we're not currently on dead ground, or if no escape is
-    found within cap/deadline (e.g. the whole reachable pocket is dead)."""
-    if (here.x, here.y) not in DEAD_PEARL_TILES:
-        return None
-
-    dist_to = {here: 0}
-    root_dir = {}
-    heap = [(0, 0, here)]
-    counter = 0
-    visited = set()
-    popped = 0
-
-    while heap:
-        g, _, pos = heapq.heappop(heap)
-        if pos in visited:
-            continue
-        visited.add(pos)
-
-        if pos != here and (pos.x, pos.y) not in DEAD_PEARL_TILES:
-            return root_dir[pos]
-
-        if deadline is not None:
-            popped += 1
-            if popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
-                return None
-        if len(dist_to) >= cap:
-            return None
-
-        for d in Direction.get_direction_list():
-            if known_edge_type(pos, d) != EdgeType.EMPTY:
-                continue
-            nxt = pos.add_dir(d)
-            if known_occupied(nxt):
-                continue
-            if is_fatal(nxt, others):
-                continue
-            new_g = g + 1
-            if nxt not in dist_to or new_g < dist_to[nxt]:
-                dist_to[nxt] = new_g
-                root_dir[nxt] = root_dir.get(pos, d)
-                counter += 1
-                heapq.heappush(heap, (new_g, counter, nxt))
-
-    return None
-
 # ---------- kamikaze: aggressive-only kill sprint, gated on trade value ----------
 #
 # stepping onto another dragon's head kills both of you (see DragonPart.is_head's
@@ -821,7 +744,7 @@ def trade_is_favorable(target, others):
     return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO
 
 
-def path_onto(here, target_pos, cap=BFS_CAP, deadline=None):
+def path_onto(here, target_pos, cap=49, deadline=None):
     """A* from here to target_pos specifically - not astar_targets above,
     because that function refuses to ever step onto ANY occupied tile, and
     the whole point here is that target_pos IS occupied (the enemy head).
@@ -927,18 +850,17 @@ def cheap_fallback_direction(moves, others, targets):
     longer treats caution as more important than a pearl right in front of
     it when time is short."""
     return min(moves, key=lambda d: (pearl_dist(moves[d], targets),
+                                       avoid_penalty(moves[d]),
                                        danger(moves[d], others),
+                                       -REGION_PEARL_SCORE.get(region_key(moves[d]), 0),
                                        random.random()))
 
 
 def choose_direction(others, round_num, deadline=None):
     here = ct.get_position()
     targets = gather_pearl_targets(here)
-    escape_dir = None
-    if not targets:
-        escape_dir = escape_dead_zone(here, others, deadline=deadline)
 
-    if AGGRESSIVE and not targets and escape_dir is None:
+    if AGGRESSIVE and not targets:
         portals = portal_directions(here, round_num)
         if portals and random.random() < PORTAL_CHANCE:
             d, pid = random.choice(portals)
@@ -970,7 +892,7 @@ def choose_direction(others, round_num, deadline=None):
         needed = ct.get_length()
     else:
         needed = ct.get_length() + 1
-    space = {d: room(p, here, needed) for d, p in moves.items()}
+    space = {d: room(p, here, needed, deadline=deadline) for d, p in moves.items()}
     roomy = {d: p for d, p in moves.items() if space[d] >= needed}
     if roomy:
         moves = roomy
@@ -984,35 +906,32 @@ def choose_direction(others, round_num, deadline=None):
     # legal, pearl-leaning move and get out
     if deadline is not None and time.perf_counter() >= deadline:
         return cheap_fallback_direction(moves, others, targets)
-
+    
     if AGGRESSIVE:
         # skip danger, and skip the enemy-head veto too (avoid_fatal=False)
         # so routing doesn't silently detour around contested ground either -
         # go straight for the nearest pearl among whatever's left, using the
-        # real A* shortest-path distance. Second priority: if we're stuck on
-        # dead ground with no target, head toward the confirmed escape
-        # direction. Then dead_zone_density steers wandering away from
-        # visibly dense dead patches even before we're deep inside one.
-        # Breaks remaining ties toward whichever option gives our own
-        # teammates more room.
+        # real A* shortest-path distance, breaking ties toward whichever
+        # option gives our own teammates more room.
         def key(d):
             p = moves[d]
             return (pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=False),
-                     0 if d == escape_dir else 1,
-                     dead_zone_density(p), ally_crowding(p, others),
+                     avoid_penalty(p), ally_crowding(p, others),
+                     -REGION_PEARL_SCORE.get(region_key(p), 0),
                      d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first (danger already down-weights
-        # enemy-head proximity gradually), then the escape direction if
-        # stuck on dead ground, then dead zone density, then closest to a
-        # pearl by real A* shortest-path distance, still avoiding fatal
-        # tiles in routing
+        # enemy-head proximity gradually), then closest to a pearl by real
+        # A* shortest-path distance, still avoiding fatal tiles in routing.
+        # avoid_penalty and the region score only matter once everything
+        # above is tied - dead-ends/barren tiles and richer regions are a
+        # nudge, not a hard rule, so a real pearl target always still wins.
         def key(d):
             p = moves[d]
             return (danger(p, others),
-                     0 if d == escape_dir else 1,
-                     dead_zone_density(p),
                      pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=True),
+                     avoid_penalty(p),
+                     -REGION_PEARL_SCORE.get(region_key(p), 0),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -1093,7 +1012,7 @@ def execute_turn() -> None:
     if kamikaze_charge(others, deadline=deadline):
         return
 
-    if round_num > 425 and not enemy_nearby(others): # activate feeding
+    if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
@@ -1155,12 +1074,12 @@ def main() -> None:
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 350                            # 0 at start, 1 around round 350
-            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                        # 100% -> floors at 40%
+            progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
+            AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if ct.get_length() > 5 and game.get_round_num() > 10:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 5 and game.get_round_num() > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()

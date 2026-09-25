@@ -309,18 +309,24 @@ def is_fatal(pos, others):
 
 # ---------- tier 2: dead ends (safe dragons only) ----------
 
-def room(start, came_from, cap):
+def room(start, came_from, cap, deadline=None):
     """Flood fill from start over free tiles in view. Returns how many tiles are
-    reachable, stopping at cap. Reaching the edge of our view counts as
-    'plenty of room' because we can't see what lies beyond."""
+    reachable, stopping at cap, or early if deadline is hit (returns the
+    count reached so far, which tier 2 then treats as an underestimate -
+    safe, since an underestimate can only make a spot look tighter than it
+    is, never falsely roomy)."""
     seen = {came_from, start}
     queue = deque([start])
     count = 0
+    popped = 0
     while queue:
         pos = queue.popleft()
         count += 1
         if count >= cap:
             return cap
+        popped += 1
+        if deadline is not None and popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
+            return count
         for d in Direction.get_direction_list():
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
@@ -691,7 +697,7 @@ def trade_is_favorable(target, others):
     return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO
 
 
-def path_onto(here, target_pos, cap=BFS_CAP, deadline=None):
+def path_onto(here, target_pos, cap=49, deadline=None):
     """A* from here to target_pos specifically - not astar_targets above,
     because that function refuses to ever step onto ANY occupied tile, and
     the whole point here is that target_pos IS occupied (the enemy head).
@@ -837,7 +843,7 @@ def choose_direction(others, round_num, deadline=None):
         needed = ct.get_length()
     else:
         needed = ct.get_length() + 1
-    space = {d: room(p, here, needed) for d, p in moves.items()}
+    space = {d: room(p, here, needed, deadline=deadline) for d, p in moves.items()}
     roomy = {d: p for d, p in moves.items() if space[d] >= needed}
     if roomy:
         moves = roomy
@@ -1013,11 +1019,11 @@ def main() -> None:
         
         if rolled == False:
             progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
-            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                        # 100% -> floors at 40%
+            AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
-        if ct.get_length() > 5 and game.get_round_num() > 10:    # Prevention from desperate split child from becoming aggressive
+        if ct.get_length() > 5 and game.get_round_num() > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
         
         execute_turn()
