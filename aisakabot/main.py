@@ -1019,7 +1019,7 @@ def main() -> None:
         
         if rolled == False:
             progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
-            AGGRO_CHANCE = max(1 - 0.6 * progress, 0.2)                        # 100% -> floors at 40%
+            AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
