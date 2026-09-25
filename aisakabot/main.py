@@ -46,6 +46,14 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
 
+# Direction.get_direction_list() allocates and returns a brand new list on
+# every single call (see helper.py). We call it dozens to hundreds of times
+# per turn - once per tile in remember_vision (49x/turn), 4x per node
+# expanded in every flood fill / A* run, etc. None of our call sites mutate
+# the returned list, so it's safe to grab it exactly once here and reuse the
+# same list everywhere instead of paying for a fresh copy every time.
+DIRS = Direction.get_direction_list()
+
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 # Crossing a portal edge lands us somewhere add_dir can't compute, so in
@@ -123,7 +131,7 @@ def terrain_reachable(start, cap=BFS_CAP):
     queue = deque([start])
     while queue and len(seen) < cap:
         pos = queue.popleft()
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
@@ -204,7 +212,7 @@ def nearby_ally_count(others, radius=3):
 
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around.
-    Used for proximity/threat checks (is_fatal, danger, ally_crowding), and
+    Used for proximity/threat checks (danger, ally_crowding), and
     as pearl_dist's fallback when BFS can't confirm a real path - see
     bfs_targets and pearl_dist_bfs below for the actual pathfinding."""
     w, h = WIDTH, HEIGHT
@@ -255,7 +263,7 @@ def portal_directions(pos, round_num):
         return []
     cooldown = ct.get_length()   # rough time for our tail to fully clear the departure tile
     options = []
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         edge = tile.get_edge(d)
         if edge.get_edge_type() != EdgeType.PORTAL:
             continue
@@ -274,14 +282,36 @@ def remember_portal_crossing(pid, round_num):
 
 # ---------- hard veto: never walk next to an enemy head ----------
 
-def is_fatal(pos, others):
-    """True if pos ends up 1 tile (or 0, though that's already blocked) from
-    an enemy head. Applies to every dragon, aggressive or safe."""
+def build_fatal_zone(others):
+    """Every tile that would be fatal to land on: the position of a visible
+    enemy head, plus its four neighbours (wraparound-aware, via add_dir, so
+    it agrees exactly with what dist(pos, head) <= 1 would say). is_fatal
+    used to redo an O(#others) distance scan - with map-wrap divisions and
+    all - on every single tile it was asked about, and it gets asked about
+    constantly: once per candidate move, and once per node A* expands
+    whenever avoid_fatal is on. There are only ever a handful of enemy
+    heads, so building this small set once per turn and then doing O(1)
+    membership checks removes that repeated scan entirely without changing
+    which tiles count as fatal."""
     my_team = ct.get_team()
+    zone = set()
     for part in others:
-        if part.is_head() and part.get_team() != my_team and dist(pos, part.get_position()) <= 1:
-            return True
-    return False
+        if not part.is_head() or part.get_team() == my_team:
+            continue
+        p = part.get_position()
+        zone.add((p.x, p.y))
+        for d in DIRS:
+            n = p.add_dir(d)
+            zone.add((n.x, n.y))
+    return zone
+
+
+def is_fatal(pos, fatal_zone):
+    """True if pos is within 1 tile (or 0, though that's already blocked) of
+    an enemy head - see build_fatal_zone for how that zone is computed.
+    Applies to every dragon, aggressive or safe (aggressive dragons just
+    choose to accept the risk instead of avoiding it)."""
+    return (pos.x, pos.y) in fatal_zone
 
 
 # ---------- tier 2: dead ends (safe dragons only) ----------
@@ -304,7 +334,7 @@ def room(start, came_from, cap, deadline=None):
         popped += 1
         if deadline is not None and popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
             return count
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
@@ -380,7 +410,7 @@ def remember_vision():
     for tile in ct.get_tiles():
         pos = tile.get_position()
         key = (pos.x, pos.y)
-        edges = {d: tile.get_edge(d).get_edge_type() for d in Direction.get_direction_list()}
+        edges = {d: tile.get_edge(d).get_edge_type() for d in DIRS}
         KNOWN_EDGES[key] = edges
         for d, edge_type in edges.items():
             if edge_type == EdgeType.KELP:
@@ -508,7 +538,7 @@ def send_sonar_report():
     of reaching a teammate), each carrying a different slice of our kelp map."""
     if not SONAR3:
         return
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         ct.send_sonar(d, encode_report(next_kelp_chunk()))
 
 
@@ -531,7 +561,7 @@ def read_sonar(round_num):
 
 # ---------- A* pathfinding ----------
 
-def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, avoid_fatal=True):
+def astar_targets(here, fatal_zone, target_positions, cap=BFS_CAP, deadline=None, avoid_fatal=True):
     """A* from `here` over the known passable-edge graph (same rules as the
     old BFS: edge must be known EMPTY, landing tile not occupied, not
     is_fatal, portals skipped since crossing one doesn't land at add_dir's
@@ -550,6 +580,10 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
     `target_positions` has been settled with its optimal distance (or cap/
     deadline is hit), so a nearby pearl no longer costs a full map-sized
     search to find.
+
+    `fatal_zone` is the precomputed set from build_fatal_zone (see there for
+    why this is a set instead of the raw `others` list) - pass None when
+    avoid_fatal is False, since it's then never touched.
 
     Returns dist_to: {pos: shortest known step count from `here`}."""
     dist_to = {here: 0}
@@ -578,13 +612,13 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
             if popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
                 break
 
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
             if known_occupied(nxt):
                 continue
-            if avoid_fatal and is_fatal(nxt, others):
+            if avoid_fatal and is_fatal(nxt, fatal_zone):
                 continue
             new_g = g + 1
             if nxt not in dist_to or new_g < dist_to[nxt]:
@@ -595,7 +629,7 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
     return dist_to
 
 
-def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
+def pearl_dist_astar(pos, targets, fatal_zone, deadline=None, avoid_fatal=True):
     """Real shortest-path turns-until-collectable for the best target, using
     A* run fresh from `pos` (the tile this move would land on), same
     per-direction reasoning as the old pearl_dist_bfs: a single search from
@@ -606,7 +640,7 @@ def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
     if not targets:
         return 0
     target_positions = [p for p, _ in targets]
-    dist_to = astar_targets(pos, others, target_positions, deadline=deadline, avoid_fatal=avoid_fatal)
+    dist_to = astar_targets(pos, fatal_zone, target_positions, deadline=deadline, avoid_fatal=avoid_fatal)
     best = None
     for target_pos, pt in targets:
         if target_pos in dist_to:
@@ -721,7 +755,7 @@ def path_onto(here, target_pos, cap=49, deadline=None):
         if len(dist_to) >= cap:
             return None
 
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
@@ -797,7 +831,7 @@ def choose_direction(others, round_num, deadline=None):
 
     # tier 1: drop anything blocked
     moves = {}
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         nxt = open_step(here, d)
         if nxt is not None:
             moves[d] = nxt
@@ -809,8 +843,14 @@ def choose_direction(others, round_num, deadline=None):
     # have nothing to gain from contesting the space. Aggressive dragons
     # accept the risk instead of ceding ground - many maps punish giving up
     # space this way, so they play the gamble rather than back off.
+    #
+    # fatal_zone is only built (and only needed) for the safe style: it's
+    # used again below when scoring safe moves through A*, so it's computed
+    # once here and threaded through rather than recomputed per candidate.
+    fatal_zone = None
     if not AGGRESSIVE:
-        safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, others)}
+        fatal_zone = build_fatal_zone(others)
+        safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, fatal_zone)}
         if safe_from_death:
             moves = safe_from_death
 
@@ -837,14 +877,15 @@ def choose_direction(others, round_num, deadline=None):
         return cheap_fallback_direction(moves, others, targets)
     
     if AGGRESSIVE:
-        # skip danger, and skip the enemy-head veto too (avoid_fatal=False)
-        # so routing doesn't silently detour around contested ground either -
-        # go straight for the nearest pearl among whatever's left, using the
-        # real A* shortest-path distance, breaking ties toward whichever
-        # option gives our own teammates more room.
+        # skip danger, and skip the enemy-head veto too (avoid_fatal=False,
+        # fatal_zone unused) so routing doesn't silently detour around
+        # contested ground either - go straight for the nearest pearl among
+        # whatever's left, using the real A* shortest-path distance,
+        # breaking ties toward whichever option gives our own teammates
+        # more room.
         def key(d):
             p = moves[d]
-            return (pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=False),
+            return (pearl_dist_astar(p, targets, None, deadline=deadline, avoid_fatal=False),
                      ally_crowding(p, others), d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first (danger already down-weights
@@ -853,7 +894,7 @@ def choose_direction(others, round_num, deadline=None):
         def key(d):
             p = moves[d]
             return (danger(p, others),
-                     pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=True),
+                     pearl_dist_astar(p, targets, fatal_zone, deadline=deadline, avoid_fatal=True),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -917,7 +958,7 @@ def last_resort(round_num):
     if desperate_split():
         return None   # split used the turn; nothing left to move
     
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         nxt = here.add_dir(d)
         tile = ct.get_tile(nxt)
     
