@@ -950,7 +950,7 @@ def execute_turn() -> None:
     if kamikaze_charge(others, deadline=deadline):
         return
 
-    if round_num > 425 and not enemy_nearby(others): # activate feeding
+    if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
