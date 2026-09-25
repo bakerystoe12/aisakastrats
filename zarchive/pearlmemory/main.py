@@ -1,5 +1,5 @@
-import helper as unswbc
-from helper import Direction, EdgeType
+import zarchive.pearlmemory.helper as unswbc
+from zarchive.pearlmemory.helper import Direction, EdgeType
 import random
 import time
 from collections import deque
@@ -10,7 +10,6 @@ ct: unswbc.Controller
 game: unswbc.Game
 
 # Test these global variables
-AGGRESSIVE = True
 
 SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
 PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
@@ -24,13 +23,13 @@ SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
                            # be irrelevant or contested by the time we'd arrive
 
-BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
+BFS_CAP = 500              # was 300 - this is the dominant per-turn cost (see
                             # bfs_targets), and pearl_dist_bfs reruns it fresh
                             # for every candidate direction, so this roughly
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 1   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -47,41 +46,6 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
 
-# ---------- region-size pearl memory (local only, never sent over sonar) ----------
-#
-# Vision is only 7x7, so a single dragon can't hold a per-tile pearl history
-# for the whole map cheaply. Instead we bucket the map into REGION_SIZE x
-# REGION_SIZE squares and remember one running count per region: how many
-# distinct pearls we've personally seen spawn there over this dragon's life.
-# That's small (at most ~(64/REGION_SIZE)^2 entries) and just needs to be
-# "which parts of the map have paid off before", not exact positions - so it
-# stays a cheap tiebreaker for wandering, never a replacement for the real
-# per-turn targets in gather_pearl_targets. Purely local memory - not part of
-# the sonar protocol, unlike KELP_EDGES.
-REGION_SIZE = 5
-REGION_PEARL_SCORE = {}      # (rx, ry) -> distinct pearls seen there so far
-_COUNTED_PEARL_TILES = set()  # which live pearls we've already counted, so a
-                               # pearl sitting still for many turns isn't recounted
-
-PEARL_CAPABLE = set()   # (x, y) tiles we've ever seen that CAN spawn a pearl
-                         # (pearl_time != -1) - remembered forever, same
-                         # reasoning as BARREN_TILES/KNOWN_EDGES: capability
-                         # is static, only the countdown itself is transient.
-                         # A tile is added here the instant we ever see it
-                         # with pearl_time != -1, regardless of what the
-                         # countdown happened to read that turn - gating this
-                         # on the current countdown (e.g. only remembering it
-                         # if we happened to catch it below PEARL_SPAWN_HORIZON)
-                         # would silently forget most capable tiles, since
-                         # they usually aren't near-zero when we pass through.
-
-REGION_DENSITY_WEIGHT = 3   # how many tiles of extra travel we'll accept to
-                            # reach a known-capable tile in a region that's
-                            # actually paid off before, per pearl we've seen
-                            # spawn there. 0 = pure nearest-tile behaviour
-                            # (old nearest_known_pearl_tile); raise it to bias
-                            # harder toward proven regions over raw distance.
-
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
 # Crossing a portal edge lands us somewhere add_dir can't compute, so in
@@ -97,9 +61,15 @@ REGION_DENSITY_WEIGHT = 3   # how many tiles of extra travel we'll accept to
 LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
 random.seed(14)
+
 # ---------- helpers ----------
 OWN_BODY = deque()      # our own body, head first, tail last - exact, not remembered/stale
 OWN_BODY_SET = set()    # same positions, rebuilt each turn, for O(1) lookups
+
+PEARL_CAPABLE = set()   # (x, y) tiles we've ever seen that CAN spawn a pearl
+                         # (pearl_time != -1) - remembered forever, same
+                         # reasoning as KNOWN_EDGES: capability is static,
+                         # only the countdown itself is transient.
 
 
 def update_own_body():
@@ -149,11 +119,12 @@ def terrain_reachable(start, cap=BFS_CAP):
     can see past the current 7x7 window for targets near the edge of view.
     Portal edges don't count as passable here either, same reasoning as
     everywhere else: we can't compute where they lead.
-
-    Returns the set of (x, y) tiles reached within `cap` steps. Called once
-    per turn now (see choose_direction) and shared between the live target
-    search and the known-pearl fallback below, instead of each running its
-    own separate flood fill over nearly the same ground."""
+ 
+    Returns the set of (x, y) tiles reached within `cap` steps. Since every
+    pearl target comes from gather_pearl_targets, which only looks at the
+    current 7x7 window, they're all close to `start` - this basically never
+    needs anywhere near the full cap in practice, it's just a safety valve
+    against a pathological kelp maze."""
     seen = {(start.x, start.y)}
     queue = deque([start])
     while queue and len(seen) < cap:
@@ -184,11 +155,7 @@ def gather_pearl_targets(here, reachable):
     mislead a direction comparison toward a target that can never be
     collected. This check only concerns permanent terrain, not dragons or
     danger - a target temporarily blocked by another dragon standing in the
-    way is still included here, since that dragon will move.
-
-    `reachable` is passed in rather than recomputed here - see
-    choose_direction, which now runs terrain_reachable once and shares it
-    with best_known_pearl_target too."""
+    way is still included here, since that dragon will move."""
     candidates = []
     for t in ct.get_tiles():
         if t.has_pearl():
@@ -214,7 +181,7 @@ def pearl_dist(pos, targets):
         return 0
     return min(max(dist(pos, p), t) for p, t in targets)
 
-def has_room_to_split():
+def has_room_to_split(deadline):
     """Flood-fills the open space around us (kelp and other dragons both
     block it, same as room() does for movement) and refuses to split if
     it's too walled-in to comfortably hold both the parent and the new
@@ -222,7 +189,7 @@ def has_room_to_split():
     independent bodies end up ramming each other."""
     here = ct.get_position()
     needed = ct.get_length() * SPLIT_ROOM_MULTIPLIER
-    return room(here, here, needed) >= needed
+    return room(here, here, needed, deadline) >= needed
 
 def nearby_ally_count(others, radius=3):
     """How many distinct ally dragons (besides us) have any visible segment
@@ -393,16 +360,18 @@ def danger(pos, others):
     total = 0.0
     for part in others:
         d = dist(pos, part.get_position())
-        weight = 1.0
+        weight = 0.5
         if part.is_head():
             if d <= 1:
-                total += 2 * weight
+                total += 5 if part.get_team() != my_team else  5 * weight
             elif d == 2:
-                total += 1 * weight
+                total += 2 if part.get_team() != my_team else  2 * weight
             elif d == 3:
-                total += 0.5 * weight
+                total += 0.5 if part.get_team() != my_team else  0.5 * weight
         elif d <= 1:
-            total += 0.5 * weight
+            total += 0.5 if part.get_team() != my_team else  0.5 * weight
+
+
     return total
 
 
@@ -435,47 +404,22 @@ def ally_crowding(pos, others):
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
 
-def region_key(pos):
-    """Which REGION_SIZE x REGION_SIZE bucket a position falls in."""
-    return (pos.x // REGION_SIZE, pos.y // REGION_SIZE)
-
-
-def best_known_pearl_target(here, reachable):
-    """When gather_pearl_targets finds nothing in current vision (a dead
-    zone: every visible tile is barren or the pearls we can see are outside
-    the spawn horizon), fall back to a real multi-turn routing target
-    instead of leaving the dragon with no pull in any direction - without
-    this, pearl_dist_astar returns 0 for every candidate and the only
-    remaining tiebreakers (ally_crowding/avoid_penalty/region score) only
-    compare a move's immediate neighbour tile, which is too short-sighted to
-    reliably walk a dragon out of a pocket several tiles deep.
-
-    Combines both prior approaches instead of picking one: candidates are
-    every remembered PEARL_CAPABLE tile that's currently reachable (same
-    pool the old nearest-tile fallback used), but scored by real distance
-    minus a bonus for sitting in a region that's actually produced pearls
-    before (REGION_PEARL_SCORE) - so a slightly farther tile in a region
-    that's spawned five pearls beats a slightly closer one in a region
-    that's only ever spawned zero or one. REGION_DENSITY_WEIGHT=0 recovers
-    the old pure-nearest behaviour exactly.
-
-    Returns a one-element target list (pt=0, an optimistic routing
-    placeholder - we don't actually know this tile's current countdown, we
-    only know it's capable), matching gather_pearl_targets' return shape so
-    it can be used as a drop-in fallback."""
+def nearest_known_pearl_tile(here, reachable):
+    """When gather_pearl_targets finds nothing in current vision, fall back
+    to the closest tile we've ever seen that's capable of spawning a pearl
+    - even without knowing its current countdown. Without this, a dragon
+    stuck in a pocket where every visible tile is permanently -1 has
+    literally no pull in any direction: pearl_dist_astar returns 0 for
+    every candidate, so ally_crowding/revisit_score/facing decide instead,
+    none of which are aimed at actually leaving the dead zone. This gives
+    a real direction to walk toward until real targets come back into view."""
     if not PEARL_CAPABLE:
         return []
     candidates = [unswbc.Position(x, y) for x, y in PEARL_CAPABLE if (x, y) in reachable]
     if not candidates:
         return []
-
-    def score(p):
-        richness = REGION_PEARL_SCORE.get(region_key(p), 0)
-        return dist(here, p) - REGION_DENSITY_WEIGHT * richness
-
-    best = min(candidates, key=score)
-    return [(best, 0)]
-
+    best = min(candidates, key=lambda p: dist(here, p))
+    return [(best, 0)]   # pt=0: optimistic placeholder, just a routing target
 
 def remember_vision():
     """Fold everything currently visible into memory. Call once per turn,
@@ -485,23 +429,11 @@ def remember_vision():
         key = (pos.x, pos.y)
         edges = {d: tile.get_edge(d).get_edge_type() for d in Direction.get_direction_list()}
         KNOWN_EDGES[key] = edges
+        if tile.get_pearl_time() != -1 and tile.get_pearl_time() < PEARL_SPAWN_HORIZON:
+            PEARL_CAPABLE.add(key)
         for d, edge_type in edges.items():
             if edge_type == EdgeType.KELP:
                 add_kelp(edge_key(pos, d))   # sonar: remember it so we can tell teammates
-
-        pt = tile.get_pearl_time()
-        
-        if pt < PEARL_SPAWN_HORIZON * 5:
-            PEARL_CAPABLE.add(key)          # remembered regardless of the
-                                             # current countdown - capability
-                                             # is static, the countdown isn't
-            if tile.has_pearl():
-                if key not in _COUNTED_PEARL_TILES:
-                    r = region_key(pos)
-                    REGION_PEARL_SCORE[r] = REGION_PEARL_SCORE.get(r, 0) + 1
-                    _COUNTED_PEARL_TILES.add(key)
-            else:
-                _COUNTED_PEARL_TILES.discard(key)
 
 
 def known_edge_type(pos, d):
@@ -752,7 +684,7 @@ def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
 # function paths onto the CURRENTLY reported head position either way; if kills
 # aren't landing in testing, that turn-order gap is the first thing to check.
 
-KAMIKAZE_MIN_LENGTH_RATIO = 1.1   # only trade if the enemy's VISIBLE length is at
+KAMIKAZE_MIN_LENGTH_RATIO = 1   # only trade if the enemy's VISIBLE length is at
                                     # least this multiple of ours. 1.0 = break-even
                                     # or better; raise it (e.g. 1.5) to only take
                                     # trades that are clearly in our favor.
@@ -788,7 +720,7 @@ def trade_is_favorable(target, others):
     even better once their off-screen segments are counted too."""
     our_length = ct.get_length()
     their_visible = visible_enemy_length(target, others)
-    return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO
+    return their_visible >= our_length + KAMIKAZE_MIN_LENGTH_RATIO
 
 
 def path_onto(here, target_pos, cap=49, deadline=None):
@@ -898,21 +830,14 @@ def cheap_fallback_direction(moves, others, targets):
     it when time is short."""
     return min(moves, key=lambda d: (pearl_dist(moves[d], targets),
                                        danger(moves[d], others),
-                                       -REGION_PEARL_SCORE.get(region_key(moves[d]), 0),
                                        random.random()))
 
 
-def choose_direction(others, round_num, deadline=None):
+def choose_direction(others, round_num, reachable, deadline=None):
     here = ct.get_position()
-    reachable = terrain_reachable(here)   # computed once, shared below
-
     targets = gather_pearl_targets(here, reachable)
     if not targets:
-        # nothing worth heading toward in current vision - fall back to a
-        # remembered pearl-capable tile, biased toward regions that have
-        # actually paid off before, rather than leaving the dragon with no
-        # pull in any direction (see best_known_pearl_target)
-        targets = best_known_pearl_target(here, reachable)
+        targets = nearest_known_pearl_tile(here, reachable)
 
     if AGGRESSIVE and not targets:
         portals = portal_directions(here, round_num)
@@ -970,26 +895,20 @@ def choose_direction(others, round_num, deadline=None):
         def key(d):
             p = moves[d]
             return (pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=False),
-                    ally_crowding(p, others),
-                     -REGION_PEARL_SCORE.get(region_key(p), 0),
-                     d != facing, random.random())
+                     ally_crowding(p, others),  d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first (danger already down-weights
         # enemy-head proximity gradually), then closest to a pearl by real
-        # A* shortest-path distance, still avoiding fatal tiles in routing.
-        # avoid_penalty and the region score only matter once everything
-        # above is tied - dead-ends/barren tiles and richer regions are a
-        # nudge, not a hard rule, so a real pearl target always still wins.
+        # A* shortest-path distance, still avoiding fatal tiles in routing
         def key(d):
             p = moves[d]
             return (danger(p, others),
                      pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=True),
-                     -REGION_PEARL_SCORE.get(region_key(p), 0),
                      d != facing, random.random())
 
     return min(moves, key=key)
 
-def try_split(others):
+def try_split(others, deadline):
     """Aggressive dragons split as soon as they're long enough. Safe dragons
     never split, to keep their body intact for evasive pathfinding."""
     if not AGGRESSIVE:
@@ -998,7 +917,7 @@ def try_split(others):
         return False
     if nearby_ally_count(others) > MAX_NEARBY_ALLIES_TO_SPLIT:
         return False
-    if not has_room_to_split():
+    if not has_room_to_split(deadline):
         return False
     length = ct.get_length()
     if length % 2 == 0:
@@ -1059,8 +978,13 @@ def execute_turn() -> None:
     remember_vision()
     read_sonar(round_num)
 
-    if try_split(others):
+    reachable = terrain_reachable(ct.get_position())
+
+    if try_split(others, deadline):
         return
+
+    if round_num > 425:
+        KAMIKAZE_MIN_LENGTH_RATIO = 0
 
     if kamikaze_charge(others, deadline=deadline):
         return
@@ -1070,7 +994,7 @@ def execute_turn() -> None:
             suicide()
             return
 
-    d = choose_direction(others, round_num, deadline=deadline)
+    d = choose_direction(others, round_num, reachable, deadline=deadline)
 
     if d is None:
         d = last_resort(round_num)
@@ -1108,7 +1032,6 @@ def seppuku_conditions(others):
                 ally_length = TEAMMATES[masked_id]["length"]
                 if ally_length > max_visible_length:
                     max_visible_length = ally_length
-                    
     max_avg = (max_length + max_visible_length + max_visible_length) / 3
 
     if ct.get_length() < max_avg * 0.8:
@@ -1119,16 +1042,17 @@ def seppuku_conditions(others):
 # ---------- boilerplate ----------
 
 def main() -> None:
-    global ct, game, AGGRESSIVE
+    global ct, game, AGGRESSIVE, SONAR3
     ct, game = unswbc.init()
+    SONAR3 = hasattr(ct, "get_sonar_echoes")   # only the protocol 3 helper has this
     rolled = False
 
     
     while unswbc.update(ct, game):
         
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
-            AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
+            progress = (game.get_round_num() - 1) / 600                            # 0 at start, 1 around round 350
+            AGGRO_CHANCE = max(1 - 0.5 * progress, 0.5)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
 
