@@ -309,18 +309,24 @@ def is_fatal(pos, others):
 
 # ---------- tier 2: dead ends (safe dragons only) ----------
 
-def room(start, came_from, cap):
+def room(start, came_from, cap, deadline=None):
     """Flood fill from start over free tiles in view. Returns how many tiles are
-    reachable, stopping at cap. Reaching the edge of our view counts as
-    'plenty of room' because we can't see what lies beyond."""
+    reachable, stopping at cap, or early if deadline is hit (returns the
+    count reached so far, which tier 2 then treats as an underestimate -
+    safe, since an underestimate can only make a spot look tighter than it
+    is, never falsely roomy)."""
     seen = {came_from, start}
     queue = deque([start])
     count = 0
+    popped = 0
     while queue:
         pos = queue.popleft()
         count += 1
         if count >= cap:
             return cap
+        popped += 1
+        if deadline is not None and popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
+            return count
         for d in Direction.get_direction_list():
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
@@ -837,7 +843,7 @@ def choose_direction(others, round_num, deadline=None):
         needed = ct.get_length()
     else:
         needed = ct.get_length() + 1
-    space = {d: room(p, here, needed) for d, p in moves.items()}
+    space = {d: room(p, here, needed, deadline=deadline) for d, p in moves.items()}
     roomy = {d: p for d, p in moves.items() if space[d] >= needed}
     if roomy:
         moves = roomy
