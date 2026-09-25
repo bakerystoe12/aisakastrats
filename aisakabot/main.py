@@ -46,23 +46,6 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
 
-# Per-turn memoization for known_edge_type/known_occupied. Every flood fill
-# and A* run (room, terrain_reachable, astar_targets, path_onto) re-asks
-# these same questions about the same handful of tiles near our head over
-# and over - most obviously across the up to 4 direction-specific searches
-# choose_direction fires each turn, which all start from neighbouring tiles
-# and overlap heavily. Nothing about vision or occupancy changes mid-turn,
-# so it's safe to cache both for the duration of one turn and clear them at
-# the top of the next - see reset_turn_caches(), called once from
-# execute_turn before anything else runs.
-_EDGE_CACHE = {}
-_OCCUPIED_CACHE = {}
-
-
-def reset_turn_caches():
-    _EDGE_CACHE.clear()
-    _OCCUPIED_CACHE.clear()
-
 # Direction.get_direction_list() allocates and returns a brand new list on
 # every single call (see helper.py). We call it dozens to hundreds of times
 # per turn - once per tile in remember_vision (49x/turn), 4x per node
@@ -138,7 +121,7 @@ def terrain_reachable(start, cap=BFS_CAP, targets=None):
     can see past the current 7x7 window for targets near the edge of view.
     Portal edges don't count as passable here either, same reasoning as
     everywhere else: we can't compute where they lead.
-
+ 
     If `targets` is given, the flood fill stops as soon as every one of
     those (x, y) tiles has been marked reached, instead of continuing on to
     `cap` regardless. gather_pearl_targets only ever calls this to answer
@@ -148,7 +131,7 @@ def terrain_reachable(start, cap=BFS_CAP, targets=None):
     case (a couple of nearby pearls) cost a handful of steps instead of the
     full cap, while the pathological-kelp-maze case still safely falls back
     to running out at `cap`.
-
+ 
     Returns the set of (x, y) tiles reached within `cap` steps. Since every
     pearl target comes from gather_pearl_targets, which only looks at the
     current 7x7 window, they're all close to `start` - this basically never
@@ -181,7 +164,7 @@ def terrain_reachable(start, cap=BFS_CAP, targets=None):
     return seen
  
  
-def gather_pearl_targets(here, tiles):
+def gather_pearl_targets(here):
     """Every tile worth heading toward for a pearl: ones that already have
     one (cost 0), plus ones that don't yet but will soon enough to be worth
     planning a path to. Skips pending tiles that currently have a dragon
@@ -195,13 +178,9 @@ def gather_pearl_targets(here, tiles):
     mislead a direction comparison toward a target that can never be
     collected. This check only concerns permanent terrain, not dragons or
     danger - a target temporarily blocked by another dragon standing in the
-    way is still included here, since that dragon will move.
-
-    `tiles` is this turn's already-fetched ct.get_tiles() result, passed in
-    so we don't ask the vision layer to re-copy its 49-tile list a second
-    time this turn."""
+    way is still included here, since that dragon will move."""
     candidates = []
-    for t in tiles:
+    for t in ct.get_tiles():
         if t.has_pearl():
             candidates.append((t.get_position(), 0))
             continue
@@ -215,8 +194,7 @@ def gather_pearl_targets(here, tiles):
     if not candidates:
         return []
  
-    candidate_positions = {(pos.x, pos.y) for pos, _ in candidates}
-    reachable = terrain_reachable(here, targets=candidate_positions)
+    reachable = terrain_reachable(here)
     return [(pos, pt) for pos, pt in candidates if (pos.x, pos.y) in reachable]
 
 def pearl_dist(pos, targets):
@@ -266,11 +244,11 @@ def dist(a, b):
     return dx + dy
 
 
-def other_dragon_parts(tiles):
+def other_dragon_parts():
     """Every visible dragon segment that isn't part of this dragon."""
     my_id = ct.get_id()
     parts = []
-    for t in tiles:
+    for t in ct.get_tiles():
         part = t.get_dragon()
         if part is not None and part.get_id() != my_id:
             parts.append(part)
@@ -447,10 +425,10 @@ def ally_crowding(pos, others):
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
 
-def remember_vision(tiles):
+def remember_vision():
     """Fold everything currently visible into memory. Call once per turn,
     before making any decisions, so this turn's own tiles are included."""
-    for tile in tiles:
+    for tile in ct.get_tiles():
         pos = tile.get_position()
         key = (pos.x, pos.y)
         edges = {d: tile.get_edge(d).get_edge_type() for d in DIRS}
@@ -464,32 +442,18 @@ def known_edge_type(pos, d):
     """The edge type stepping d from pos: read live if pos is in view right
     now, else whatever we remembered from the last time we saw pos. None
     means we've never seen this edge at all, so - same as an unseen tile
-    does for a single step - it stays untraversable.
-
-    Memoized per turn (see _EDGE_CACHE) since the same (pos, d) gets asked
-    about repeatedly across the several overlapping searches run each turn."""
-    key = (pos.x, pos.y, d)
-    result = _EDGE_CACHE.get(key)
-    if result is not None:
-        return result
-
+    does for a single step - it stays untraversable."""
     tile = ct.get_tile(pos)
     if tile is not None:
-        result = tile.get_edge(d).get_edge_type()
-    else:
-        edges = KNOWN_EDGES.get((pos.x, pos.y))
-        if edges is None:
-            if edge_key(pos, d) in KELP_EDGES:
-                result = EdgeType.KELP        # never seen it ourselves, but a teammate's sonar told us
-            elif AGGRESSIVE:
-                result = EdgeType.EMPTY
-            else:
-                result = EdgeType.KELP        # unseen & safe -> untraversable, not a crash
-        else:
-            result = edges.get(d, EdgeType.EMPTY)
-
-    _EDGE_CACHE[key] = result
-    return result
+        return tile.get_edge(d).get_edge_type()
+    edges = KNOWN_EDGES.get((pos.x, pos.y))
+    if edges is None:
+        if edge_key(pos, d) in KELP_EDGES:
+            return EdgeType.KELP        # never seen it ourselves, but a teammate's sonar told us
+        if AGGRESSIVE:
+            return EdgeType.EMPTY
+        return EdgeType.KELP        # unseen & safe -> untraversable, not a crash
+    return edges.get(d, EdgeType.EMPTY)
 
 
 def known_occupied(pos):
@@ -499,19 +463,10 @@ def known_occupied(pos):
     it's treated as clear - but our own body is the one exception: see
     update_own_body, which reconstructs it exactly with no need for vision,
     so it stays correct even off-screen."""
-    key = (pos.x, pos.y)
-    result = _OCCUPIED_CACHE.get(key)
-    if result is not None:
-        return result
-
     tile = ct.get_tile(pos)
     if tile is not None:
-        result = tile.get_dragon() is not None
-    else:
-        result = key in OWN_BODY_SET
-
-    _OCCUPIED_CACHE[key] = result
-    return result
+        return tile.get_dragon() is not None
+    return (pos.x, pos.y) in OWN_BODY_SET
 
 
 # ---------- sonar: share our mode, length, id and kelp map with teammates ----------
@@ -695,23 +650,17 @@ def astar_targets(here, fatal_zone, target_positions, cap=BFS_CAP, deadline=None
     return dist_to
 
 
-def pearl_dist_astar(pos, targets, fatal_zone, deadline=None, avoid_fatal=True, target_positions=None):
+def pearl_dist_astar(pos, targets, fatal_zone, deadline=None, avoid_fatal=True):
     """Real shortest-path turns-until-collectable for the best target, using
     A* run fresh from `pos` (the tile this move would land on), same
     per-direction reasoning as the old pearl_dist_bfs: a single search from
     `here` can't give every direction its own honest distance, so each
     candidate move gets its own run. Falls back to Manhattan-based pearl_dist
     only for a target A* genuinely couldn't reach (outside cap, or through
-    unexplored territory).
-
-    `target_positions` lets the caller pass in the bare positions once
-    instead of us re-deriving the same list from `targets` on every one of
-    the up to 4 calls choose_direction makes per turn - pass None to have it
-    derived here as before."""
+    unexplored territory)."""
     if not targets:
         return 0
-    if target_positions is None:
-        target_positions = [p for p, _ in targets]
+    target_positions = [p for p, _ in targets]
     dist_to = astar_targets(pos, fatal_zone, target_positions, deadline=deadline, avoid_fatal=avoid_fatal)
     best = None
     for target_pos, pt in targets:
@@ -890,13 +839,9 @@ def cheap_fallback_direction(moves, others, targets):
                                        random.random()))
 
 
-def choose_direction(others, round_num, tiles, deadline=None):
+def choose_direction(others, round_num, deadline=None):
     here = ct.get_position()
-    targets = gather_pearl_targets(here, tiles)
-    # Derived once and reused across every candidate direction below, rather
-    # than re-derived from `targets` on each of the up to 4 pearl_dist_astar
-    # calls this turn.
-    target_positions = [p for p, _ in targets] if targets else None
+    targets = gather_pearl_targets(here)
 
     if AGGRESSIVE and not targets:
         portals = portal_directions(here, round_num)
@@ -961,8 +906,7 @@ def choose_direction(others, round_num, tiles, deadline=None):
         # more room.
         def key(d):
             p = moves[d]
-            return (pearl_dist_astar(p, targets, None, deadline=deadline, avoid_fatal=False,
-                                       target_positions=target_positions),
+            return (pearl_dist_astar(p, targets, None, deadline=deadline, avoid_fatal=False),
                      ally_crowding(p, others), d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first (danger already down-weights
@@ -971,8 +915,7 @@ def choose_direction(others, round_num, tiles, deadline=None):
         def key(d):
             p = moves[d]
             return (danger(p, others),
-                     pearl_dist_astar(p, targets, fatal_zone, deadline=deadline, avoid_fatal=True,
-                                        target_positions=target_positions),
+                     pearl_dist_astar(p, targets, fatal_zone, deadline=deadline, avoid_fatal=True),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -1053,13 +996,9 @@ def last_resort(round_num):
 def execute_turn() -> None:
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
-    reset_turn_caches()   # clear the per-turn edge/occupancy memoization
-    tiles = ct.get_tiles()   # fetched once and shared, instead of re-copied
-                              # by other_dragon_parts, remember_vision and
-                              # gather_pearl_targets separately
-    others = other_dragon_parts(tiles)
+    others = other_dragon_parts()
     update_own_body()
-    remember_vision(tiles)
+    remember_vision()
     read_sonar(round_num)
 
     if try_split(others):
@@ -1073,7 +1012,7 @@ def execute_turn() -> None:
             suicide()
             return
 
-    d = choose_direction(others, round_num, tiles, deadline=deadline)
+    d = choose_direction(others, round_num, deadline=deadline)
 
     if d is None:
         d = last_resort(round_num)
