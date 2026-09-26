@@ -949,7 +949,7 @@ def enemy_can_reach(enemy_pos, here, max_steps):
     completely unable to reach each other - which was making the dodge
     shed tail (a real, permanent cost) against threats that were never
     actually live."""
-    reachable = terrain_reachable(enemy_pos, cap=max_steps, targets={(here.x, here.y)})
+    reachable = terrain_reachable(enemy_pos, cap=16, targets={(here.x, here.y)})
     return (here.x, here.y) in reachable
 
 def kamikaze_threat(others):
@@ -1014,7 +1014,6 @@ def cheap_fallback_direction(moves, others, targets):
     walk into an obviously worse spot when two options tie - it just no
     longer treats caution as more important than a pearl right in front of
     it when time is short."""
-    ct.output_log("fallback activated because of timeout")
     return min(moves, key=lambda d: (pearl_dist(moves[d], targets),
                                        danger(moves[d], others),
                                        random.random()))
