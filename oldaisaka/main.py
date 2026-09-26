@@ -15,9 +15,11 @@ SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
 PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
-MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
+MAX_NEARBY_ALLIES_TO_SPLIT = 3    # skip splitting if more than this many other allies are close
 
-SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
+PEARL_ROOM_WEIGHT = 0                      # How much a pearl counts as space in split_room()
+
+SPLIT_ROOM_MULTIPLIER = 1.5   # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
                             # movement (tier 2) does before committing to it
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
@@ -29,7 +31,7 @@ BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.06   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -45,6 +47,31 @@ BFS_DEADLINE_CHECK_EVERY = 4   # nodes between deadline checks inside a BFS.
                                 # before the next check even happened.
 
 KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever once seen
+
+# Per-turn memoization for known_edge_type/known_occupied. Every flood fill
+# and A* run (room, terrain_reachable, astar_targets, path_onto) re-asks
+# these same questions about the same handful of tiles near our head over
+# and over - most obviously across the up to 4 direction-specific searches
+# choose_direction fires each turn, which all start from neighbouring tiles
+# and overlap heavily. Nothing about vision or occupancy changes mid-turn,
+# so it's safe to cache both for the duration of one turn and clear them at
+# the top of the next - see reset_turn_caches(), called once from
+# execute_turn before anything else runs.
+_EDGE_CACHE = {}
+_OCCUPIED_CACHE = {}
+
+
+def reset_turn_caches():
+    _EDGE_CACHE.clear()
+    _OCCUPIED_CACHE.clear()
+
+# Direction.get_direction_list() allocates and returns a brand new list on
+# every single call (see helper.py). We call it dozens to hundreds of times
+# per turn - once per tile in remember_vision (49x/turn), 4x per node
+# expanded in every flood fill / A* run, etc. None of our call sites mutate
+# the returned list, so it's safe to grab it exactly once here and reuse the
+# same list everywhere instead of paying for a fresh copy every time.
+DIRS = Direction.get_direction_list()
 
 
 # ---------- portals: gamble pool, minus the one we know is a trap ----------
@@ -104,7 +131,7 @@ def stable_roll(key):
     h = hashlib.sha256(str(key).encode()).hexdigest()
     return int(h[:8], 16) / 0xFFFFFFFF
 
-def terrain_reachable(start, cap=BFS_CAP):
+def terrain_reachable(start, cap=81, targets=None):
     """Flood fill using only known edge terrain (kelp vs empty), ignoring
     dragons and danger entirely - kelp never moves, so this answers a
     narrower, more stable question than bfs_targets does: 'is there any
@@ -113,17 +140,34 @@ def terrain_reachable(start, cap=BFS_CAP):
     can see past the current 7x7 window for targets near the edge of view.
     Portal edges don't count as passable here either, same reasoning as
     everywhere else: we can't compute where they lead.
- 
+
+    If `targets` is given, the flood fill stops as soon as every one of
+    those (x, y) tiles has been marked reached, instead of continuing on to
+    `cap` regardless. gather_pearl_targets only ever calls this to answer
+    "which of my candidate tiles can I actually reach", so once every
+    candidate is already confirmed in `seen`, exploring further tells it
+    nothing new about the one question it's asking - this makes the common
+    case (a couple of nearby pearls) cost a handful of steps instead of the
+    full cap, while the pathological-kelp-maze case still safely falls back
+    to running out at `cap`.
+
     Returns the set of (x, y) tiles reached within `cap` steps. Since every
     pearl target comes from gather_pearl_targets, which only looks at the
     current 7x7 window, they're all close to `start` - this basically never
     needs anywhere near the full cap in practice, it's just a safety valve
     against a pathological kelp maze."""
-    seen = {(start.x, start.y)}
+    start_key = (start.x, start.y)
+    seen = {start_key}
+    remaining = None
+    if targets is not None:
+        remaining = set(targets)
+        remaining.discard(start_key)
+        if not remaining:
+            return seen
     queue = deque([start])
     while queue and len(seen) < cap:
         pos = queue.popleft()
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
@@ -132,10 +176,14 @@ def terrain_reachable(start, cap=BFS_CAP):
                 continue
             seen.add(key)
             queue.append(nxt)
+            if remaining is not None:
+                remaining.discard(key)
+                if not remaining:
+                    return seen
     return seen
  
  
-def gather_pearl_targets(here):
+def gather_pearl_targets(here, tiles):
     """Every tile worth heading toward for a pearl: ones that already have
     one (cost 0), plus ones that don't yet but will soon enough to be worth
     planning a path to. Skips pending tiles that currently have a dragon
@@ -149,9 +197,13 @@ def gather_pearl_targets(here):
     mislead a direction comparison toward a target that can never be
     collected. This check only concerns permanent terrain, not dragons or
     danger - a target temporarily blocked by another dragon standing in the
-    way is still included here, since that dragon will move."""
+    way is still included here, since that dragon will move.
+
+    `tiles` is this turn's already-fetched ct.get_tiles() result, passed in
+    so we don't ask the vision layer to re-copy its 49-tile list a second
+    time this turn."""
     candidates = []
-    for t in ct.get_tiles():
+    for t in tiles:
         if t.has_pearl():
             candidates.append((t.get_position(), 0))
             continue
@@ -160,12 +212,13 @@ def gather_pearl_targets(here):
             continue
         if t.get_dragon() is not None:
             continue
-        candidates.append((t.get_position(), pt))
+        candidates.append((t.get_position(), pt))   
  
     if not candidates:
         return []
  
-    reachable = terrain_reachable(here)
+    candidate_positions = {(pos.x, pos.y) for pos, _ in candidates}
+    reachable = terrain_reachable(here, targets=candidate_positions)
     return [(pos, pt) for pos, pt in candidates if (pos.x, pos.y) in reachable]
 
 def pearl_dist(pos, targets):
@@ -176,15 +229,64 @@ def pearl_dist(pos, targets):
         return 0
     return min(max(dist(pos, p), t) for p, t in targets)
 
+
+def split_room(start, came_from, needed, bfs_cap = 50):
+    """Flood fill from start over free tiles in view, same traversal rules as
+    room() (kelp/dragons block, unseen tiles beyond the fringe count as
+    'plenty of room'), but a tile that currently has a pearl or will spawn
+    one within PEARL_SPAWN_HORIZON only contributes PEARL_ROOM_WEIGHT
+    instead of a full 1 - kept separate from room() since ordinary movement
+    (tier 2) doesn't need this discount, only the split-safety check does.
+
+    Two different limits, not one: `needed` is the room threshold we're
+    testing against (weighted total, can stop the instant it's reached),
+    while `bfs_cap` bounds how many actual tiles get expanded regardless of
+    weight - so a search made of mostly-discounted pearl tiles can't run
+    far longer than a plain search just because each tile only adds
+    PEARL_ROOM_WEIGHT toward the total instead of 1.
+
+    Only affects tiles currently in live vision; pearl state isn't
+    remembered past the 7x7 window the way kelp is (see
+    gather_pearl_targets), so anything beyond it still counts as plain
+    open space."""
+    seen = {came_from, start}
+    queue = deque([start])
+    total = 0.0
+    expanded = 0
+
+    while queue:
+        if total >= needed or expanded >= bfs_cap:
+            break
+        pos = queue.popleft()
+        expanded += 1
+
+        weight = 1.0
+        tile = ct.get_tile(pos)
+        if tile is not None:
+            pt = tile.get_pearl_time()
+            if tile.has_pearl() or (0 <= pt <= 25):
+                weight = PEARL_ROOM_WEIGHT
+        total += weight
+
+        for d in Direction.get_direction_list():
+            if known_edge_type(pos, d) != EdgeType.EMPTY:
+                continue
+            nxt = pos.add_dir(d)
+            if nxt in seen:
+                continue
+            if not tile_ever_seen(nxt):
+                return needed   # unseen fringe = plenty of room, same as room()
+            if known_occupied(nxt):
+                continue
+            seen.add(nxt)
+            queue.append(nxt)
+
+    return total
+
 def has_room_to_split():
-    """Flood-fills the open space around us (kelp and other dragons both
-    block it, same as room() does for movement) and refuses to split if
-    it's too walled-in to comfortably hold both the parent and the new
-    child afterward - a tight, kelp-choked pocket is exactly where two
-    independent bodies end up ramming each other."""
     here = ct.get_position()
     needed = ct.get_length() * SPLIT_ROOM_MULTIPLIER
-    return room(here, here, needed) >= needed
+    return split_room(here, here, needed) >= needed
 
 def nearby_ally_count(others, radius=3):
     """How many distinct ally dragons (besides us) have any visible segment
@@ -202,35 +304,12 @@ def nearby_ally_count(others, radius=3):
             seen_ids.add(part.get_id())
     return len(seen_ids)
 
-def nearby_enemy_count(others, radius=3):  # counts nearby enemy dragons
-    here = ct.get_position()
-    my_team = ct.get_team()
-    seen_ids = set()
-    for part in others:
-        if part.get_team() == my_team:
-            continue
-        if part.get_id() in seen_ids:
-            continue
-        if dist(here, part.get_position()) <= radius:
-            seen_ids.add(part.get_id())
-    return len(seen_ids)
-
-def ratio(others):
-    ally = nearby_ally_count(others)
-    enemy = nearby_enemy_count(others)
-    if ally != 0:
-        return enemy / ally
-    elif enemy > 2:
-        return 3
-    else:
-        return 0
-
 def dist(a, b):
     """Manhattan distance that accounts for the map wrapping around.
-    Used for proximity/threat checks (is_fatal, danger, ally_crowding), and
+    Used for proximity/threat checks (danger, ally_crowding), and
     as pearl_dist's fallback when BFS can't confirm a real path - see
     bfs_targets and pearl_dist_bfs below for the actual pathfinding."""
-    w, h = game.get_map_size()
+    w, h = WIDTH, HEIGHT
     dx = abs(a.x - b.x)
     dx = min(dx, w - dx)
     dy = abs(a.y - b.y)
@@ -238,11 +317,11 @@ def dist(a, b):
     return dx + dy
 
 
-def other_dragon_parts():
+def other_dragon_parts(tiles):
     """Every visible dragon segment that isn't part of this dragon."""
     my_id = ct.get_id()
     parts = []
-    for t in ct.get_tiles():
+    for t in tiles:
         part = t.get_dragon()
         if part is not None and part.get_id() != my_id:
             parts.append(part)
@@ -278,7 +357,7 @@ def portal_directions(pos, round_num):
         return []
     cooldown = ct.get_length()   # rough time for our tail to fully clear the departure tile
     options = []
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         edge = tile.get_edge(d)
         if edge.get_edge_type() != EdgeType.PORTAL:
             continue
@@ -297,14 +376,36 @@ def remember_portal_crossing(pid, round_num):
 
 # ---------- hard veto: never walk next to an enemy head ----------
 
-def is_fatal(pos, others):
-    """True if pos ends up 1 tile (or 0, though that's already blocked) from
-    an enemy head. Applies to every dragon, aggressive or safe."""
+def build_fatal_zone(others):
+    """Every tile that would be fatal to land on: the position of a visible
+    enemy head, plus its four neighbours (wraparound-aware, via add_dir, so
+    it agrees exactly with what dist(pos, head) <= 1 would say). is_fatal
+    used to redo an O(#others) distance scan - with map-wrap divisions and
+    all - on every single tile it was asked about, and it gets asked about
+    constantly: once per candidate move, and once per node A* expands
+    whenever avoid_fatal is on. There are only ever a handful of enemy
+    heads, so building this small set once per turn and then doing O(1)
+    membership checks removes that repeated scan entirely without changing
+    which tiles count as fatal."""
     my_team = ct.get_team()
+    zone = set()
     for part in others:
-        if part.is_head() and part.get_team() != my_team and dist(pos, part.get_position()) <= 1:
-            return True
-    return False
+        if not part.is_head() or part.get_team() == my_team:
+            continue
+        p = part.get_position()
+        zone.add((p.x, p.y))
+        for d in DIRS:
+            n = p.add_dir(d)
+            zone.add((n.x, n.y))
+    return zone
+
+
+def is_fatal(pos, fatal_zone):
+    """True if pos is within 1 tile (or 0, though that's already blocked) of
+    an enemy head - see build_fatal_zone for how that zone is computed.
+    Applies to every dragon, aggressive or safe (aggressive dragons just
+    choose to accept the risk instead of avoiding it)."""
+    return (pos.x, pos.y) in fatal_zone
 
 
 # ---------- tier 2: dead ends (safe dragons only) ----------
@@ -327,7 +428,7 @@ def room(start, came_from, cap, deadline=None):
         popped += 1
         if deadline is not None and popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
             return count
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
@@ -397,13 +498,13 @@ def ally_crowding(pos, others):
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
 
-def remember_vision():
+def remember_vision(tiles):
     """Fold everything currently visible into memory. Call once per turn,
     before making any decisions, so this turn's own tiles are included."""
-    for tile in ct.get_tiles():
+    for tile in tiles:
         pos = tile.get_position()
         key = (pos.x, pos.y)
-        edges = {d: tile.get_edge(d).get_edge_type() for d in Direction.get_direction_list()}
+        edges = {d: tile.get_edge(d).get_edge_type() for d in DIRS}
         KNOWN_EDGES[key] = edges
         for d, edge_type in edges.items():
             if edge_type == EdgeType.KELP:
@@ -414,18 +515,32 @@ def known_edge_type(pos, d):
     """The edge type stepping d from pos: read live if pos is in view right
     now, else whatever we remembered from the last time we saw pos. None
     means we've never seen this edge at all, so - same as an unseen tile
-    does for a single step - it stays untraversable."""
+    does for a single step - it stays untraversable.
+
+    Memoized per turn (see _EDGE_CACHE) since the same (pos, d) gets asked
+    about repeatedly across the several overlapping searches run each turn."""
+    key = (pos.x, pos.y, d)
+    result = _EDGE_CACHE.get(key)
+    if result is not None:
+        return result
+
     tile = ct.get_tile(pos)
     if tile is not None:
-        return tile.get_edge(d).get_edge_type()
-    edges = KNOWN_EDGES.get((pos.x, pos.y))
-    if edges is None:
-        if edge_key(pos, d) in KELP_EDGES:
-            return EdgeType.KELP        # never seen it ourselves, but a teammate's sonar told us
-        if AGGRESSIVE:
-            return EdgeType.EMPTY
-        return EdgeType.KELP        # unseen & safe -> untraversable, not a crash
-    return edges.get(d, EdgeType.EMPTY)
+        result = tile.get_edge(d).get_edge_type()
+    else:
+        edges = KNOWN_EDGES.get((pos.x, pos.y))
+        if edges is None:
+            if edge_key(pos, d) in KELP_EDGES:
+                result = EdgeType.KELP        # never seen it ourselves, but a teammate's sonar told us
+            elif AGGRESSIVE:
+                result = EdgeType.EMPTY
+            else:
+                result = EdgeType.KELP        # unseen & safe -> untraversable, not a crash
+        else:
+            result = edges.get(d, EdgeType.EMPTY)
+
+    _EDGE_CACHE[key] = result
+    return result
 
 
 def known_occupied(pos):
@@ -435,10 +550,19 @@ def known_occupied(pos):
     it's treated as clear - but our own body is the one exception: see
     update_own_body, which reconstructs it exactly with no need for vision,
     so it stays correct even off-screen."""
+    key = (pos.x, pos.y)
+    result = _OCCUPIED_CACHE.get(key)
+    if result is not None:
+        return result
+
     tile = ct.get_tile(pos)
     if tile is not None:
-        return tile.get_dragon() is not None
-    return (pos.x, pos.y) in OWN_BODY_SET
+        result = tile.get_dragon() is not None
+    else:
+        result = key in OWN_BODY_SET
+
+    _OCCUPIED_CACHE[key] = result
+    return result
 
 
 # ---------- sonar: share our mode, length, id and kelp map with teammates ----------
@@ -531,7 +655,7 @@ def send_sonar_report():
     of reaching a teammate), each carrying a different slice of our kelp map."""
     if not SONAR3:
         return
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         ct.send_sonar(d, encode_report(next_kelp_chunk()))
 
 
@@ -554,7 +678,7 @@ def read_sonar(round_num):
 
 # ---------- A* pathfinding ----------
 
-def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, avoid_fatal=True):
+def astar_targets(here, fatal_zone, target_positions, cap=BFS_CAP, deadline=None, avoid_fatal=True):
     """A* from `here` over the known passable-edge graph (same rules as the
     old BFS: edge must be known EMPTY, landing tile not occupied, not
     is_fatal, portals skipped since crossing one doesn't land at add_dir's
@@ -573,6 +697,10 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
     `target_positions` has been settled with its optimal distance (or cap/
     deadline is hit), so a nearby pearl no longer costs a full map-sized
     search to find.
+
+    `fatal_zone` is the precomputed set from build_fatal_zone (see there for
+    why this is a set instead of the raw `others` list) - pass None when
+    avoid_fatal is False, since it's then never touched.
 
     Returns dist_to: {pos: shortest known step count from `here`}."""
     dist_to = {here: 0}
@@ -601,13 +729,13 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
             if popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
                 break
 
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
             if known_occupied(nxt):
                 continue
-            if avoid_fatal and is_fatal(nxt, others):
+            if avoid_fatal and is_fatal(nxt, fatal_zone):
                 continue
             new_g = g + 1
             if nxt not in dist_to or new_g < dist_to[nxt]:
@@ -618,18 +746,24 @@ def astar_targets(here, others, target_positions, cap=BFS_CAP, deadline=None, av
     return dist_to
 
 
-def pearl_dist_astar(pos, targets, others, deadline=None, avoid_fatal=True):
+def pearl_dist_astar(pos, targets, fatal_zone, deadline=None, avoid_fatal=True, target_positions=None):
     """Real shortest-path turns-until-collectable for the best target, using
     A* run fresh from `pos` (the tile this move would land on), same
     per-direction reasoning as the old pearl_dist_bfs: a single search from
     `here` can't give every direction its own honest distance, so each
     candidate move gets its own run. Falls back to Manhattan-based pearl_dist
     only for a target A* genuinely couldn't reach (outside cap, or through
-    unexplored territory)."""
+    unexplored territory).
+
+    `target_positions` lets the caller pass in the bare positions once
+    instead of us re-deriving the same list from `targets` on every one of
+    the up to 4 calls choose_direction makes per turn - pass None to have it
+    derived here as before."""
     if not targets:
         return 0
-    target_positions = [p for p, _ in targets]
-    dist_to = astar_targets(pos, others, target_positions, deadline=deadline, avoid_fatal=avoid_fatal)
+    if target_positions is None:
+        target_positions = [p for p, _ in targets]
+    dist_to = astar_targets(pos, fatal_zone, target_positions, deadline=deadline, avoid_fatal=avoid_fatal)
     best = None
     for target_pos, pt in targets:
         if target_pos in dist_to:
@@ -744,7 +878,7 @@ def path_onto(here, target_pos, cap=49, deadline=None):
         if len(dist_to) >= cap:
             return None
 
-        for d in Direction.get_direction_list():
+        for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
@@ -789,6 +923,84 @@ def kamikaze_charge(others, deadline=None):
     ct.make_moves(path)
     return True
 
+# ---------- kamikaze dodge: safe dragons flee a shorter enemy that could trade with us ----------
+#
+# Stepping onto another dragon's head kills BOTH sides, no matter which one is
+# longer (see DragonPart.is_head) - so a shorter enemy loses less than we do by
+# trying it, and has every incentive to hunt us down for exactly that trade
+# (it's the mirror image of our own kamikaze_charge, above). Safe dragons have
+# nothing to gain from that fight, so as soon as a visibly-shorter enemy head
+# is close enough to plausibly land the hit, or is lined up and heading
+# straight for us, we shed a small chunk of tail (less to lose if it still
+# connects) and turn to move away from it - a simple override that takes
+# priority over the normal pearl-seeking/danger-scoring move.
+
+KAMIKAZE_DODGE_CLOSE_RANGE = 2     # a shorter enemy head this close could
+                                     # plausibly reach and hit us within a turn or two
+KAMIKAZE_DODGE_SPRINT_RANGE = 3    # further out, but still worth reacting to if
+                                     # it's actually heading straight for us
+
+def enemy_can_reach(enemy_pos, here, max_steps):
+    """Whether a real path (through known non-kelp terrain, ignoring
+    dragons/danger - same coarse-but-cheap approximation terrain_reachable
+    already uses elsewhere) connects enemy_pos to here within max_steps.
+    Without this, kamikaze_threat flags a head as threatening purely by
+    raw Manhattan distance, even when a kelp wall makes the two of you
+    completely unable to reach each other - which was making the dodge
+    shed tail (a real, permanent cost) against threats that were never
+    actually live."""
+    reachable = terrain_reachable(enemy_pos, cap=16, targets={(here.x, here.y)})
+    return (here.x, here.y) in reachable
+
+def kamikaze_threat(others):
+    here = ct.get_position()
+    my_team = ct.get_team()
+    our_length = ct.get_length()
+    best = None
+    best_dist = None
+    for part in others:
+        if not part.is_head() or part.get_team() == my_team:
+            continue
+        if visible_enemy_length(part, others) >= our_length:
+            continue
+        d = dist(here, part.get_position())
+        if d <= KAMIKAZE_DODGE_CLOSE_RANGE:
+            threatening = True
+        elif d <= KAMIKAZE_DODGE_SPRINT_RANGE:
+            nxt = part.get_position().add_dir(part.get_dir())
+            threatening = dist(here, nxt) < d
+        else:
+            threatening = False
+
+        if threatening and not enemy_can_reach(part.get_position(), here, KAMIKAZE_DODGE_SPRINT_RANGE + 1):
+            threatening = False   # raw distance looked close, but no actual route exists
+
+        if threatening and (best_dist is None or d < best_dist):
+            best, best_dist = part, d
+    return best
+
+def kamikaze_dodge_split(others):
+    """Safe dragons only: if a shorter enemy head is close enough or clearly
+    closing in, shed a small chunk of tail every other turn a threat
+    persists - less to lose if it still lands the trade. Movement itself is
+    NOT handled here anymore: fleeing is folded into choose_direction's own
+    scoring (see the threat term in its key()) so it inherits tier 1's fatal
+    veto and tier 2's room-based dead-end avoidance for free, instead of
+    away_from's un-room-checked movement, which is what walked us into a
+    dead end - see the pink-portal incident."""
+    if AGGRESSIVE:
+        return False
+    threat = kamikaze_threat(others)
+    if threat is None:
+        return False
+    
+    child = max(2, ct.get_length() - 2)
+    if ct.can_split(child):
+        ct.do_split(child)
+        return True
+    return False
+
+
 
 # ---------- decision ----------
 
@@ -807,9 +1019,13 @@ def cheap_fallback_direction(moves, others, targets):
                                        random.random()))
 
 
-def choose_direction(others, round_num, deadline=None):
+def choose_direction(others, round_num, tiles, deadline=None):
     here = ct.get_position()
-    targets = gather_pearl_targets(here)
+    targets = gather_pearl_targets(here, tiles)
+    # Derived once and reused across every candidate direction below, rather
+    # than re-derived from `targets` on each of the up to 4 pearl_dist_astar
+    # calls this turn.
+    target_positions = [p for p, _ in targets] if targets else None
 
     if AGGRESSIVE and not targets:
         portals = portal_directions(here, round_num)
@@ -820,7 +1036,7 @@ def choose_direction(others, round_num, deadline=None):
 
     # tier 1: drop anything blocked
     moves = {}
-    for d in Direction.get_direction_list():
+    for d in DIRS:
         nxt = open_step(here, d)
         if nxt is not None:
             moves[d] = nxt
@@ -832,13 +1048,20 @@ def choose_direction(others, round_num, deadline=None):
     # have nothing to gain from contesting the space. Aggressive dragons
     # accept the risk instead of ceding ground - many maps punish giving up
     # space this way, so they play the gamble rather than back off.
+    #
+    # fatal_zone is only built (and only needed) for the safe style: it's
+    # used again below when scoring safe moves through A*, so it's computed
+    # once here and threaded through rather than recomputed per candidate.
+    fatal_zone = None
     if not AGGRESSIVE:
-        safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, others)}
+        fatal_zone = build_fatal_zone(others)
+        safe_from_death = {d: p for d, p in moves.items() if not is_fatal(p, fatal_zone)}
         if safe_from_death:
             moves = safe_from_death
 
     # tier 2: drop moves into pockets too small for us - applies to both
     # styles, since walking into a dead end is never useful, only risky
+    
     if AGGRESSIVE:
         needed = ct.get_length()
     else:
@@ -856,18 +1079,19 @@ def choose_direction(others, round_num, deadline=None):
     # already out of time - don't start A* scoring at all, just take a
     # legal, pearl-leaning move and get out
     if deadline is not None and time.perf_counter() >= deadline:
-        ct.output_log("timed out")
         return cheap_fallback_direction(moves, others, targets)
     
     if AGGRESSIVE:
-        # skip danger, and skip the enemy-head veto too (avoid_fatal=False)
-        # so routing doesn't silently detour around contested ground either -
-        # go straight for the nearest pearl among whatever's left, using the
-        # real A* shortest-path distance, breaking ties toward whichever
-        # option gives our own teammates more room.
+        # skip danger, and skip the enemy-head veto too (avoid_fatal=False,
+        # fatal_zone unused) so routing doesn't silently detour around
+        # contested ground either - go straight for the nearest pearl among
+        # whatever's left, using the real A* shortest-path distance,
+        # breaking ties toward whichever option gives our own teammates
+        # more room.
         def key(d):
             p = moves[d]
-            return (pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=False),
+            return (pearl_dist_astar(p, targets, None, deadline=deadline, avoid_fatal=False,
+                                       target_positions=target_positions),
                      ally_crowding(p, others), d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first (danger already down-weights
@@ -876,7 +1100,8 @@ def choose_direction(others, round_num, deadline=None):
         def key(d):
             p = moves[d]
             return (danger(p, others),
-                     pearl_dist_astar(p, targets, others, deadline=deadline, avoid_fatal=True),
+                     pearl_dist_astar(p, targets, fatal_zone, deadline=deadline, avoid_fatal=True,
+                                        target_positions=target_positions),
                      d != facing, random.random())
 
     return min(moves, key=key)
@@ -939,16 +1164,31 @@ def last_resort(round_num):
 
     if desperate_split():
         return None   # split used the turn; nothing left to move
-
+    
+    for d in DIRS:
+        nxt = here.add_dir(d)
+        tile = ct.get_tile(nxt)
+    
+        if tile is not None:
+            dragon = tile.get_dragon()
+        
+            if dragon is not None:
+                if dragon.get_team() == ct.get_team() and dragon.is_head():
+                    suicide()
+                    return None
     return ct.get_dir()   # truly nothing left to try
 
 
-def execute_turn() -> None:
+def execute_turn() -> None:                                                                                                          # EXECUTE
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
-    others = other_dragon_parts()
+    reset_turn_caches()   # clear the per-turn edge/occupancy memoization
+    tiles = ct.get_tiles()   # fetched once and shared, instead of re-copied
+                              # by other_dragon_parts, remember_vision and
+                              # gather_pearl_targets separately
+    others = other_dragon_parts(tiles)
     update_own_body()
-    remember_vision()
+    remember_vision(tiles)
     read_sonar(round_num)
 
     if try_split(others):
@@ -957,12 +1197,15 @@ def execute_turn() -> None:
     if kamikaze_charge(others, deadline=deadline):
         return
 
+    if kamikaze_dodge_split(others):
+        return
+
     if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
 
-    d = choose_direction(others, round_num, deadline=deadline)
+    d = choose_direction(others, round_num, tiles, deadline=deadline)
 
     if d is None:
         d = last_resort(round_num)
@@ -1014,19 +1257,27 @@ def main() -> None:
     ct, game = unswbc.init()
     SONAR3 = hasattr(ct, "get_sonar_echoes")   # only the protocol 3 helper has this
     rolled = False
-
+    w, h = game.get_map_size()
+    global WIDTH, HEIGHT
+    WIDTH = w
+    HEIGHT = h
     
     while unswbc.update(ct, game):
-        
+        round_num = game.get_round_num()
+
+
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
+            progress = (round_num - 1) / 400                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
+            if round_num < 100:
+                AGGRESSIVE = True
 
-        if ct.get_length() > 5 and game.get_round_num() > 1:    # Prevention from desperate split child from becoming aggressive
+
+        if ct.get_length() > 5 and round_num > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
-        
+
         execute_turn()
         send_sonar_report()   # sonars fire after our action, so send after the move
         unswbc.end_turn()
