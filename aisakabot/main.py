@@ -17,9 +17,9 @@ PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
 
 MAX_NEARBY_ALLIES_TO_SPLIT = 3    # skip splitting if more than this many other allies are close
 
-PEARL_ROOM_WEIGHT = 0.1                      # How much a pearl counts as space in split_room()
+PEARL_ROOM_WEIGHT = 0                      # How much a pearl counts as space in split_room()
 
-SPLIT_ROOM_MULTIPLIER = 1.2   # a split needs room for two independent bodies, not
+SPLIT_ROOM_MULTIPLIER = 1.5   # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
                             # movement (tier 2) does before committing to it
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
@@ -264,7 +264,7 @@ def split_room(start, came_from, needed, bfs_cap = 50):
         tile = ct.get_tile(pos)
         if tile is not None:
             pt = tile.get_pearl_time()
-            if tile.has_pearl() or (0 <= pt <= PEARL_SPAWN_HORIZON):
+            if tile.has_pearl() or (0 <= pt <= 25):
                 weight = PEARL_ROOM_WEIGHT
         total += weight
 
