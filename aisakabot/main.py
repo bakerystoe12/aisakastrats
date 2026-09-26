@@ -129,7 +129,7 @@ def stable_roll(key):
     h = hashlib.sha256(str(key).encode()).hexdigest()
     return int(h[:8], 16) / 0xFFFFFFFF
 
-def terrain_reachable(start, cap=BFS_CAP, targets=None):
+def terrain_reachable(start, cap=81, targets=None):
     """Flood fill using only known edge terrain (kelp vs empty), ignoring
     dragons and danger entirely - kelp never moves, so this answers a
     narrower, more stable question than bfs_targets does: 'is there any
@@ -210,7 +210,7 @@ def gather_pearl_targets(here, tiles):
             continue
         if t.get_dragon() is not None:
             continue
-        candidates.append((t.get_position(), pt))
+        candidates.append((t.get_position(), pt))   
  
     if not candidates:
         return []
@@ -932,6 +932,7 @@ def choose_direction(others, round_num, tiles, deadline=None):
 
     # tier 2: drop moves into pockets too small for us - applies to both
     # styles, since walking into a dead end is never useful, only risky
+    
     if AGGRESSIVE:
         needed = ct.get_length()
     else:
@@ -949,7 +950,6 @@ def choose_direction(others, round_num, tiles, deadline=None):
     # already out of time - don't start A* scoring at all, just take a
     # legal, pearl-leaning move and get out
     if deadline is not None and time.perf_counter() >= deadline:
-        ct.output_log("timed out")
         return cheap_fallback_direction(moves, others, targets)
     
     if AGGRESSIVE:
