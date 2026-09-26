@@ -15,9 +15,11 @@ SPLIT_MIN_LENGTH = 4            # aggressive dragons split once this long
 PORTAL_CHANCE = 1             # aggressive dragons: odds of diving into an
                                  # available portal this turn instead of pathing normally
 
-MAX_NEARBY_ALLIES_TO_SPLIT = 4    # skip splitting if more than this many other allies are close
+MAX_NEARBY_ALLIES_TO_SPLIT = 3    # skip splitting if more than this many other allies are close
 
-SPLIT_ROOM_MULTIPLIER = 2   # a split needs room for two independent bodies, not
+PEARL_ROOM_WEIGHT = 0.1                      # How much a pearl counts as space in split_room()
+
+SPLIT_ROOM_MULTIPLIER = 1.2   # a split needs room for two independent bodies, not
                             # one, so require more open space than plain
                             # movement (tier 2) does before committing to it
 PEARL_SPAWN_HORIZON = 5   # ignore spawns further out than this - too likely to
@@ -29,7 +31,7 @@ BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 
-TURN_TIME_BUDGET = 0.05   # seconds. Stop chasing BFS precision once this much
+TURN_TIME_BUDGET = 0.06   # seconds. Stop chasing BFS precision once this much
                             # of the turn has elapsed and fall back to a cheap
                             # move instead, so we always answer well inside the
                             # engine's per-turn limit rather than risk a
@@ -227,15 +229,64 @@ def pearl_dist(pos, targets):
         return 0
     return min(max(dist(pos, p), t) for p, t in targets)
 
+
+def split_room(start, came_from, needed, bfs_cap = 50):
+    """Flood fill from start over free tiles in view, same traversal rules as
+    room() (kelp/dragons block, unseen tiles beyond the fringe count as
+    'plenty of room'), but a tile that currently has a pearl or will spawn
+    one within PEARL_SPAWN_HORIZON only contributes PEARL_ROOM_WEIGHT
+    instead of a full 1 - kept separate from room() since ordinary movement
+    (tier 2) doesn't need this discount, only the split-safety check does.
+
+    Two different limits, not one: `needed` is the room threshold we're
+    testing against (weighted total, can stop the instant it's reached),
+    while `bfs_cap` bounds how many actual tiles get expanded regardless of
+    weight - so a search made of mostly-discounted pearl tiles can't run
+    far longer than a plain search just because each tile only adds
+    PEARL_ROOM_WEIGHT toward the total instead of 1.
+
+    Only affects tiles currently in live vision; pearl state isn't
+    remembered past the 7x7 window the way kelp is (see
+    gather_pearl_targets), so anything beyond it still counts as plain
+    open space."""
+    seen = {came_from, start}
+    queue = deque([start])
+    total = 0.0
+    expanded = 0
+
+    while queue:
+        if total >= needed or expanded >= bfs_cap:
+            break
+        pos = queue.popleft()
+        expanded += 1
+
+        weight = 1.0
+        tile = ct.get_tile(pos)
+        if tile is not None:
+            pt = tile.get_pearl_time()
+            if tile.has_pearl() or (0 <= pt <= PEARL_SPAWN_HORIZON):
+                weight = PEARL_ROOM_WEIGHT
+        total += weight
+
+        for d in Direction.get_direction_list():
+            if known_edge_type(pos, d) != EdgeType.EMPTY:
+                continue
+            nxt = pos.add_dir(d)
+            if nxt in seen:
+                continue
+            if not tile_ever_seen(nxt):
+                return needed   # unseen fringe = plenty of room, same as room()
+            if known_occupied(nxt):
+                continue
+            seen.add(nxt)
+            queue.append(nxt)
+
+    return total
+
 def has_room_to_split():
-    """Flood-fills the open space around us (kelp and other dragons both
-    block it, same as room() does for movement) and refuses to split if
-    it's too walled-in to comfortably hold both the parent and the new
-    child afterward - a tight, kelp-choked pocket is exactly where two
-    independent bodies end up ramming each other."""
     here = ct.get_position()
     needed = ct.get_length() * SPLIT_ROOM_MULTIPLIER
-    return room(here, here, needed) >= needed
+    return split_room(here, here, needed) >= needed
 
 def nearby_ally_count(others, radius=3):
     """How many distinct ally dragons (besides us) have any visible segment
@@ -872,6 +923,123 @@ def kamikaze_charge(others, deadline=None):
     ct.make_moves(path)
     return True
 
+# ---------- kamikaze dodge: safe dragons flee a shorter enemy that could trade with us ----------
+#
+# Stepping onto another dragon's head kills BOTH sides, no matter which one is
+# longer (see DragonPart.is_head) - so a shorter enemy loses less than we do by
+# trying it, and has every incentive to hunt us down for exactly that trade
+# (it's the mirror image of our own kamikaze_charge, above). Safe dragons have
+# nothing to gain from that fight, so as soon as a visibly-shorter enemy head
+# is close enough to plausibly land the hit, or is lined up and heading
+# straight for us, we shed a small chunk of tail (less to lose if it still
+# connects) and turn to move away from it - a simple override that takes
+# priority over the normal pearl-seeking/danger-scoring move.
+
+KAMIKAZE_DODGE_CLOSE_RANGE = 2     # a shorter enemy head this close could
+                                     # plausibly reach and hit us within a turn or two
+KAMIKAZE_DODGE_SPRINT_RANGE = 3    # further out, but still worth reacting to if
+                                     # it's actually heading straight for us
+KAMIKAZE_DODGE_SPLIT_SIZE = unswbc.Constants.MIN_SIZE   # smallest legal chunk to
+                                                          # shed - "splitting by 1"
+                                                          # isn't legal (MIN_SIZE is
+                                                          # 2), so this is the
+                                                          # closest equivalent
+
+_DODGE_SPLIT_LAST = False   # did our last kamikaze-dodge response split (vs turn
+                              # away)? Alternate the two so a threat that sticks
+                              # around for several turns gets both reactions
+                              # instead of splitting every single turn until it's
+                              # no longer legal to.
+
+
+def kamikaze_threat(others):
+    """Nearest visible enemy head that's shorter than us (by visible length -
+    a lower bound, see visible_enemy_length) and either already close enough
+    to plausibly land a head-on hit, or further out but clearly sprinting
+    straight at us. Returns the DragonPart, or None."""
+    here = ct.get_position()
+    my_team = ct.get_team()
+    our_length = ct.get_length()
+    best = None
+    best_dist = None
+    for part in others:
+        if not part.is_head() or part.get_team() == my_team:
+            continue
+        if visible_enemy_length(part, others) >= our_length:
+            continue   # not shorter - not the trade this dodge guards against
+        d = dist(here, part.get_position())
+        if d <= KAMIKAZE_DODGE_CLOSE_RANGE:
+            threatening = True
+        elif d <= KAMIKAZE_DODGE_SPRINT_RANGE:
+            nxt = part.get_position().add_dir(part.get_dir())
+            threatening = dist(here, nxt) < d   # its own heading closes the gap on us
+        else:
+            threatening = False
+        if threatening and (best_dist is None or d < best_dist):
+            best, best_dist = part, d
+    return best
+
+
+def away_from(threat_pos, fatal_zone=None):
+    """Whichever open direction leaves us furthest from threat_pos - simply
+    turning the other way, wraparound aware. Prefers not to land next to a
+    *different* enemy head while fleeing this one, when fatal_zone is given.
+    Falls back to the current facing on ties so we don't dither between two
+    equally-good escapes."""
+    here = ct.get_position()
+    facing = ct.get_dir()
+    candidates = []
+    for d in DIRS:
+        if open_step(here, d) is None:
+            continue
+        nxt = here.add_dir(d)
+        safe = fatal_zone is None or not is_fatal(nxt, fatal_zone)
+        candidates.append((d, nxt, safe))
+    if not candidates:
+        return None
+    safe_candidates = [c for c in candidates if c[2]]
+    pool = safe_candidates if safe_candidates else candidates
+
+    best_d, best_score = None, -1
+    for d, nxt, _ in pool:
+        score = dist(nxt, threat_pos)
+        if score > best_score or (score == best_score and d == facing):
+            best_d, best_score = d, score
+    return best_d
+
+
+def kamikaze_dodge(others):
+    """Safe dragons only: react to a nearby or incoming shorter enemy by
+    shedding a small chunk of tail and turning away, alternating the two so
+    a threat that lingers for several turns gets both reactions instead of
+    just repeated splitting while it's still legal to. Returns True if it
+    used the turn, else False (no threat, or nothing legal to do about it)."""
+
+    global _DODGE_SPLIT_LAST
+    if AGGRESSIVE:
+        return False
+    
+    child = max(2, ct.get_length() - 2)
+
+    threat = kamikaze_threat(others)
+    if threat is None:
+        _DODGE_SPLIT_LAST = False
+        return False
+
+    if not _DODGE_SPLIT_LAST and ct.can_split(child):
+        ct.do_split(child)
+        _DODGE_SPLIT_LAST = True
+        return True
+
+    fatal_zone = build_fatal_zone(others)
+    d = away_from(threat.get_position(), fatal_zone)
+    if d is not None:
+        ct.make_move(d)
+        _DODGE_SPLIT_LAST = False
+        return True
+    return False
+
+
 
 # ---------- decision ----------
 
@@ -885,6 +1053,7 @@ def cheap_fallback_direction(moves, others, targets):
     walk into an obviously worse spot when two options tie - it just no
     longer treats caution as more important than a pearl right in front of
     it when time is short."""
+    ct.output_log("fallback activated because of timeout")
     return min(moves, key=lambda d: (pearl_dist(moves[d], targets),
                                        danger(moves[d], others),
                                        random.random()))
@@ -1050,7 +1219,7 @@ def last_resort(round_num):
     return ct.get_dir()   # truly nothing left to try
 
 
-def execute_turn() -> None:
+def execute_turn() -> None:                                                                                                          # EXECUTE
     round_num = game.get_round_num()
     deadline = time.perf_counter() + TURN_TIME_BUDGET
     reset_turn_caches()   # clear the per-turn edge/occupancy memoization
@@ -1066,6 +1235,9 @@ def execute_turn() -> None:
         return
 
     if kamikaze_charge(others, deadline=deadline):
+        return
+
+    if kamikaze_dodge(others):
         return
 
     if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
@@ -1131,16 +1303,21 @@ def main() -> None:
     HEIGHT = h
     
     while unswbc.update(ct, game):
-        
+        round_num = game.get_round_num()
+
+
         if rolled == False:
-            progress = (game.get_round_num() - 1) / 400                            # 0 at start, 1 around round 350
+            progress = (round_num - 1) / 400                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
+            if round_num < 100:
+                AGGRESSIVE = True
 
-        if ct.get_length() > 5 and game.get_round_num() > 1:    # Prevention from desperate split child from becoming aggressive
+
+        if ct.get_length() > 5 and round_num > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
-        
+
         execute_turn()
         send_sonar_report()   # sonars fire after our action, so send after the move
         unswbc.end_turn()
