@@ -939,24 +939,20 @@ KAMIKAZE_DODGE_CLOSE_RANGE = 2     # a shorter enemy head this close could
                                      # plausibly reach and hit us within a turn or two
 KAMIKAZE_DODGE_SPRINT_RANGE = 3    # further out, but still worth reacting to if
                                      # it's actually heading straight for us
-KAMIKAZE_DODGE_SPLIT_SIZE = unswbc.Constants.MIN_SIZE   # smallest legal chunk to
-                                                          # shed - "splitting by 1"
-                                                          # isn't legal (MIN_SIZE is
-                                                          # 2), so this is the
-                                                          # closest equivalent
 
-_DODGE_SPLIT_LAST = False   # did our last kamikaze-dodge response split (vs turn
-                              # away)? Alternate the two so a threat that sticks
-                              # around for several turns gets both reactions
-                              # instead of splitting every single turn until it's
-                              # no longer legal to.
-
+def enemy_can_reach(enemy_pos, here, max_steps):
+    """Whether a real path (through known non-kelp terrain, ignoring
+    dragons/danger - same coarse-but-cheap approximation terrain_reachable
+    already uses elsewhere) connects enemy_pos to here within max_steps.
+    Without this, kamikaze_threat flags a head as threatening purely by
+    raw Manhattan distance, even when a kelp wall makes the two of you
+    completely unable to reach each other - which was making the dodge
+    shed tail (a real, permanent cost) against threats that were never
+    actually live."""
+    reachable = terrain_reachable(enemy_pos, cap=max_steps, targets={(here.x, here.y)})
+    return (here.x, here.y) in reachable
 
 def kamikaze_threat(others):
-    """Nearest visible enemy head that's shorter than us (by visible length -
-    a lower bound, see visible_enemy_length) and either already close enough
-    to plausibly land a head-on hit, or further out but clearly sprinting
-    straight at us. Returns the DragonPart, or None."""
     here = ct.get_position()
     my_team = ct.get_team()
     our_length = ct.get_length()
@@ -966,76 +962,41 @@ def kamikaze_threat(others):
         if not part.is_head() or part.get_team() == my_team:
             continue
         if visible_enemy_length(part, others) >= our_length:
-            continue   # not shorter - not the trade this dodge guards against
+            continue
         d = dist(here, part.get_position())
         if d <= KAMIKAZE_DODGE_CLOSE_RANGE:
             threatening = True
         elif d <= KAMIKAZE_DODGE_SPRINT_RANGE:
             nxt = part.get_position().add_dir(part.get_dir())
-            threatening = dist(here, nxt) < d   # its own heading closes the gap on us
+            threatening = dist(here, nxt) < d
         else:
             threatening = False
+
+        if threatening and not enemy_can_reach(part.get_position(), here, KAMIKAZE_DODGE_SPRINT_RANGE + 1):
+            threatening = False   # raw distance looked close, but no actual route exists
+
         if threatening and (best_dist is None or d < best_dist):
             best, best_dist = part, d
     return best
 
-
-def away_from(threat_pos, fatal_zone=None):
-    """Whichever open direction leaves us furthest from threat_pos - simply
-    turning the other way, wraparound aware. Prefers not to land next to a
-    *different* enemy head while fleeing this one, when fatal_zone is given.
-    Falls back to the current facing on ties so we don't dither between two
-    equally-good escapes."""
-    here = ct.get_position()
-    facing = ct.get_dir()
-    candidates = []
-    for d in DIRS:
-        if open_step(here, d) is None:
-            continue
-        nxt = here.add_dir(d)
-        safe = fatal_zone is None or not is_fatal(nxt, fatal_zone)
-        candidates.append((d, nxt, safe))
-    if not candidates:
-        return None
-    safe_candidates = [c for c in candidates if c[2]]
-    pool = safe_candidates if safe_candidates else candidates
-
-    best_d, best_score = None, -1
-    for d, nxt, _ in pool:
-        score = dist(nxt, threat_pos)
-        if score > best_score or (score == best_score and d == facing):
-            best_d, best_score = d, score
-    return best_d
-
-
-def kamikaze_dodge(others):
-    """Safe dragons only: react to a nearby or incoming shorter enemy by
-    shedding a small chunk of tail and turning away, alternating the two so
-    a threat that lingers for several turns gets both reactions instead of
-    just repeated splitting while it's still legal to. Returns True if it
-    used the turn, else False (no threat, or nothing legal to do about it)."""
-
-    global _DODGE_SPLIT_LAST
+def kamikaze_dodge_split(others):
+    """Safe dragons only: if a shorter enemy head is close enough or clearly
+    closing in, shed a small chunk of tail every other turn a threat
+    persists - less to lose if it still lands the trade. Movement itself is
+    NOT handled here anymore: fleeing is folded into choose_direction's own
+    scoring (see the threat term in its key()) so it inherits tier 1's fatal
+    veto and tier 2's room-based dead-end avoidance for free, instead of
+    away_from's un-room-checked movement, which is what walked us into a
+    dead end - see the pink-portal incident."""
     if AGGRESSIVE:
+        return False
+    threat = kamikaze_threat(others)
+    if threat is None:
         return False
     
     child = max(2, ct.get_length() - 2)
-
-    threat = kamikaze_threat(others)
-    if threat is None:
-        _DODGE_SPLIT_LAST = False
-        return False
-
-    if not _DODGE_SPLIT_LAST and ct.can_split(child):
+    if ct.can_split(child):
         ct.do_split(child)
-        _DODGE_SPLIT_LAST = True
-        return True
-
-    fatal_zone = build_fatal_zone(others)
-    d = away_from(threat.get_position(), fatal_zone)
-    if d is not None:
-        ct.make_move(d)
-        _DODGE_SPLIT_LAST = False
         return True
     return False
 
@@ -1237,8 +1198,8 @@ def execute_turn() -> None:                                                     
     if kamikaze_charge(others, deadline=deadline):
         return
 
-    # if kamikaze_dodge(others):
-    #     return
+    if kamikaze_dodge_split(others):
+        return
 
     if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
         if seppuku_conditions(others):
