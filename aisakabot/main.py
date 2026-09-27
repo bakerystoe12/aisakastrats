@@ -92,6 +92,11 @@ random.seed(14)
 OWN_BODY = deque()      # our own body, head first, tail last - exact, not remembered/stale
 OWN_BODY_SET = set()    # same positions, rebuilt each turn, for O(1) lookups
 
+PEARL_CAPABLE = set()   # (x, y) tiles we've ever seen that CAN spawn a pearl
+                         # (pearl_time != -1) - remembered forever, same
+                         # reasoning as KNOWN_EDGES: capability is static,
+                         # only the countdown itself is transient.
+
 
 def update_own_body():
     """Rebuild exactly where our own body is right now, using only things we
@@ -219,7 +224,16 @@ def gather_pearl_targets(here, tiles):
  
     candidate_positions = {(pos.x, pos.y) for pos, _ in candidates}
     reachable = terrain_reachable(here, targets=candidate_positions)
-    return [(pos, pt) for pos, pt in candidates if (pos.x, pos.y) in reachable]
+
+    targets = []
+    for pos, pt in candidates:
+        key = (pos.x, pos.y)
+        if key not in reachable:
+            continue
+        PEARL_CAPABLE.add(key)
+        targets.append((pos, pt))
+
+    return targets
 
 def pearl_dist(pos, targets):
     """Turns until pos could plausibly collect the best target: whichever is
@@ -497,6 +511,20 @@ def ally_crowding(pos, others):
 # nothing shared with any other dragon: kelp and walls never move once
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
+
+def nearest_known_pearl_tile(here):
+    """When gather_pearl_targets finds nothing in current vision, fall back
+    to the closest tile we've ever seen that's capable of spawning a pearl
+    - even without knowing its current countdown. Without this, a dragon
+    stuck in a pocket where every visible tile is permanently -1 has
+    literally no pull in any direction: pearl_dist_astar returns 0 for
+    every candidate, so ally_crowding/revisit_score/facing decide instead,
+    none of which are aimed at actually leaving the dead zone. This gives
+    a real direction to walk toward until real targets come back into view."""
+    if not PEARL_CAPABLE:
+        return []
+    best = min(PEARL_CAPABLE, key=lambda p: dist(here, unswbc.Position(p[0], p[1])))
+    return [(unswbc.Position(best[0], best[1]), 0)]
 
 def remember_vision(tiles):
     """Fold everything currently visible into memory. Call once per turn,
@@ -1014,6 +1042,7 @@ def cheap_fallback_direction(moves, others, targets):
     walk into an obviously worse spot when two options tie - it just no
     longer treats caution as more important than a pearl right in front of
     it when time is short."""
+    ct.output_log("timed out")
     return min(moves, key=lambda d: (pearl_dist(moves[d], targets),
                                        danger(moves[d], others),
                                        random.random()))
@@ -1025,7 +1054,6 @@ def choose_direction(others, round_num, tiles, deadline=None):
     # Derived once and reused across every candidate direction below, rather
     # than re-derived from `targets` on each of the up to 4 pearl_dist_astar
     # calls this turn.
-    target_positions = [p for p, _ in targets] if targets else None
 
     if AGGRESSIVE and not targets:
         portals = portal_directions(here, round_num)
@@ -1033,6 +1061,10 @@ def choose_direction(others, round_num, tiles, deadline=None):
             d, pid = random.choice(portals)
             remember_portal_crossing(pid, round_num)
             return d
+
+    if not targets:
+        targets = nearest_known_pearl_tile(here)
+    target_positions = [p for p, _ in targets] if targets else None
 
     # tier 1: drop anything blocked
     moves = {}
@@ -1267,7 +1299,7 @@ def main() -> None:
 
 
         if rolled == False:
-            progress = (round_num - 1) / 400                            # 0 at start, 1 around round 350
+            progress = (round_num - 1) / 500                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
