@@ -87,7 +87,7 @@ DIRS = Direction.get_direction_list()
 
 LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
-random.seed(14)
+
 # ---------- helpers ----------
 OWN_BODY = deque()      # our own body, head first, tail last - exact, not remembered/stale
 OWN_BODY_SET = set()    # same positions, rebuilt each turn, for O(1) lookups
@@ -243,6 +243,39 @@ def pearl_dist(pos, targets):
     if not targets:
         return 0
     return min(max(dist(pos, p), t) for p, t in targets)
+
+
+# ---------- pearl clusters: prefer a dense patch over scattered singles ----------
+
+CLUSTER_RADIUS = 2      # pearls within this many tiles (Manhattan) of each
+                         # other count as part of the same cluster
+CLUSTER_MIN_SIZE = 6    # need at least this many pearls packed that tightly
+                         # before we call it "a cluster" - anything looser is
+                         # just handled as ordinary individual pearl-seeking
+
+
+def find_pearl_cluster(targets):
+    """Look for a tight group of at least CLUSTER_MIN_SIZE pearls among
+    `targets` (all within CLUSTER_RADIUS of one shared pearl). If one exists,
+    return just that group so the caller paths toward the dense patch instead
+    of splitting attention across every stray pearl on the board. Returns
+    None when nothing that dense is around, so normal pearl-seeking (every
+    target, closest first) applies as before.
+
+    Deliberately simple: targets is at most a few dozen entries (one 7x7
+    vision window's worth), so a plain O(n^2) distance check per turn is
+    cheap - no need for real spatial indexing here."""
+    if len(targets) < CLUSTER_MIN_SIZE:
+        return None
+
+    positions = [p for p, _ in targets]
+    best_group = None
+    for p in positions:
+        group = [t for t, q in zip(targets, positions) if dist(p, q) <= CLUSTER_RADIUS]
+        if len(group) >= CLUSTER_MIN_SIZE:
+            if best_group is None or len(group) > len(best_group):
+                best_group = group
+    return best_group
 
 
 def split_room(start, came_from, needed, bfs_cap = 50):
@@ -1029,7 +1062,6 @@ def cheap_fallback_direction(moves, others, targets):
     walk into an obviously worse spot when two options tie - it just no
     longer treats caution as more important than a pearl right in front of
     it when time is short."""
-    ct.output_log("timed out")
     return min(moves, key=lambda d: (pearl_dist(moves[d], targets),
                                        danger(moves[d], others),
                                        random.random()))
@@ -1038,6 +1070,15 @@ def cheap_fallback_direction(moves, others, targets):
 def choose_direction(others, round_num, tiles, deadline=None):
     here = ct.get_position()
     targets = gather_pearl_targets(here, tiles)
+
+    # If a dense cluster of pearls is sitting nearby, chase that instead of
+    # whatever lone pearl happens to be a tile or two closer - a cluster is
+    # worth more total length, so it should win the tie even against a
+    # slightly nearer single spawn.
+    cluster = find_pearl_cluster(targets)
+    if cluster:
+        targets = cluster
+
     # Derived once and reused across every candidate direction below, rather
     # than re-derived from `targets` on each of the up to 4 pearl_dist_astar
     # calls this turn.
@@ -1262,6 +1303,9 @@ def seppuku_conditions(others):
                     max_visible_length = ally_length
     max_avg = (max_length + max_visible_length + max_visible_length) / 3
 
+    if ct.get_length() < max_visible_length:
+        return ally_found
+
     if ct.get_length() < max_avg * 0.8:
         return ally_found
     return False
@@ -1295,7 +1339,7 @@ def main() -> None:
         if ct.get_length() > 5 and round_num > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
 
-        execute_turn()
+        execute_turn()  
         send_sonar_report()   # sonars fire after our action, so send after the move
         unswbc.end_turn()
 
