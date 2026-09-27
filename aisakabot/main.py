@@ -1258,7 +1258,7 @@ def execute_turn() -> None:                                                     
     if kamikaze_dodge_split(others):
         return
 
-    if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
+    if round_num > 400 and not enemy_nearby(others) and round_num < 490: # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
@@ -1332,7 +1332,7 @@ def main() -> None:
             AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
-            if round_num < 100:
+            if round_num < 250:
                 AGGRESSIVE = True
 
 
