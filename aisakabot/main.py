@@ -137,30 +137,28 @@ def stable_roll(key):
     return int(h[:8], 16) / 0xFFFFFFFF
 
 def terrain_reachable(start, cap=81, targets=None):
-    """Flood fill using only known edge terrain (kelp vs empty), ignoring
-    dragons and danger entirely - kelp never moves, so this answers a
-    narrower, more stable question than bfs_targets does: 'is there any
-    possible route at all', not 'is there a route that's clear and safe
-    right now'. Uses the same remembered-edge memory as bfs_targets, so it
-    can see past the current 7x7 window for targets near the edge of view.
-    Portal edges don't count as passable here either, same reasoning as
-    everywhere else: we can't compute where they lead.
+    """Best-first (not FIFO) flood fill toward `targets`: expands nodes in
+    order of Manhattan distance to the nearest still-unresolved target,
+    instead of fanning out uniformly in every direction - same heuristic
+    idea as astar_targets, just answering "reachable or not" instead of
+    "how far". This means the search actually walks toward what it's
+    looking for, so real targets get found well before an equivalent plain
+    BFS would reach them for the same `cap` budget, instead of burning that
+    budget on irrelevant open space in every other direction first.
 
-    If `targets` is given, the flood fill stops as soon as every one of
-    those (x, y) tiles has been marked reached, instead of continuing on to
-    `cap` regardless. gather_pearl_targets only ever calls this to answer
-    "which of my candidate tiles can I actually reach", so once every
-    candidate is already confirmed in `seen`, exploring further tells it
-    nothing new about the one question it's asking - this makes the common
-    case (a couple of nearby pearls) cost a handful of steps instead of the
-    full cap, while the pathological-kelp-maze case still safely falls back
-    to running out at `cap`.
+    Falls back to plain insertion-order expansion when targets is None
+    (heuristic is always 0, so ties break purely on discovery order) -
+    matches the old FIFO behaviour exactly for that case.
 
-    Returns the set of (x, y) tiles reached within `cap` steps. Since every
-    pearl target comes from gather_pearl_targets, which only looks at the
-    current 7x7 window, they're all close to `start` - this basically never
-    needs anywhere near the full cap in practice, it's just a safety valve
-    against a pathological kelp maze."""
+    Same traversal/fringe rules as before: an edge must be known EMPTY, and
+    a genuinely unseen tile is marked reachable but not expanded past (see
+    tile_ever_seen) - ignorance stays permissive rather than a wall, without
+    letting the search wander unboundedly into the fog.
+
+    `cap` now bounds nodes actually expanded (popped and processed), same
+    definition astar_targets uses - not total tiles discovered - so it's a
+    much tighter, more meaningful budget than before: with this ordering,
+    reaching a target N tiles away costs roughly N expansions, not O(N^2)."""
     start_key = (start.x, start.y)
     seen = {start_key}
     remaining = None
@@ -169,9 +167,29 @@ def terrain_reachable(start, cap=81, targets=None):
         remaining.discard(start_key)
         if not remaining:
             return seen
-    queue = deque([start])
-    while queue and len(seen) < cap:
-        pos = queue.popleft()
+
+    def key_dist(a, b):
+        w, h = WIDTH, HEIGHT
+        dx = abs(a[0] - b[0]); dx = min(dx, w - dx)
+        dy = abs(a[1] - b[1]); dy = min(dy, h - dy)
+        return dx + dy
+
+    def heuristic(pos_key):
+        return min(key_dist(pos_key, t) for t in remaining) if remaining else 0
+
+    counter = 0
+    heap = [(heuristic(start_key), counter, start)]
+    visited = set()
+    expanded = 0
+
+    while heap and expanded < cap:
+        _, _, pos = heapq.heappop(heap)
+        pos_key = (pos.x, pos.y)
+        if pos_key in visited:
+            continue
+        visited.add(pos_key)
+        expanded += 1
+
         for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
@@ -180,11 +198,15 @@ def terrain_reachable(start, cap=81, targets=None):
             if key in seen:
                 continue
             seen.add(key)
-            queue.append(nxt)
             if remaining is not None:
                 remaining.discard(key)
                 if not remaining:
                     return seen
+            if not tile_ever_seen(nxt):
+                continue   # fringe: reachable, but don't expand past it
+            counter += 1
+            heapq.heappush(heap, (heuristic(key), counter, nxt))
+
     return seen
  
  
@@ -511,20 +533,6 @@ def ally_crowding(pos, others):
 # nothing shared with any other dragon: kelp and walls never move once
 # placed, so any edge we've ever seen can be trusted forever, long after it
 # scrolls out of view.
-
-def nearest_known_pearl_tile(here):
-    """When gather_pearl_targets finds nothing in current vision, fall back
-    to the closest tile we've ever seen that's capable of spawning a pearl
-    - even without knowing its current countdown. Without this, a dragon
-    stuck in a pocket where every visible tile is permanently -1 has
-    literally no pull in any direction: pearl_dist_astar returns 0 for
-    every candidate, so ally_crowding/revisit_score/facing decide instead,
-    none of which are aimed at actually leaving the dead zone. This gives
-    a real direction to walk toward until real targets come back into view."""
-    if not PEARL_CAPABLE:
-        return []
-    best = min(PEARL_CAPABLE, key=lambda p: dist(here, unswbc.Position(p[0], p[1])))
-    return [(unswbc.Position(best[0], best[1]), 0)]
 
 def remember_vision(tiles):
     """Fold everything currently visible into memory. Call once per turn,
@@ -1054,6 +1062,7 @@ def choose_direction(others, round_num, tiles, deadline=None):
     # Derived once and reused across every candidate direction below, rather
     # than re-derived from `targets` on each of the up to 4 pearl_dist_astar
     # calls this turn.
+    target_positions = [p for p, _ in targets] if targets else None
 
     if AGGRESSIVE and not targets:
         portals = portal_directions(here, round_num)
@@ -1062,9 +1071,6 @@ def choose_direction(others, round_num, tiles, deadline=None):
             remember_portal_crossing(pid, round_num)
             return d
 
-    if not targets:
-        targets = nearest_known_pearl_tile(here)
-    target_positions = [p for p, _ in targets] if targets else None
 
     # tier 1: drop anything blocked
     moves = {}
