@@ -137,28 +137,6 @@ def stable_roll(key):
     return int(h[:8], 16) / 0xFFFFFFFF
 
 def terrain_reachable(start, cap=81, targets=None):
-    """Best-first (not FIFO) flood fill toward `targets`: expands nodes in
-    order of Manhattan distance to the nearest still-unresolved target,
-    instead of fanning out uniformly in every direction - same heuristic
-    idea as astar_targets, just answering "reachable or not" instead of
-    "how far". This means the search actually walks toward what it's
-    looking for, so real targets get found well before an equivalent plain
-    BFS would reach them for the same `cap` budget, instead of burning that
-    budget on irrelevant open space in every other direction first.
-
-    Falls back to plain insertion-order expansion when targets is None
-    (heuristic is always 0, so ties break purely on discovery order) -
-    matches the old FIFO behaviour exactly for that case.
-
-    Same traversal/fringe rules as before: an edge must be known EMPTY, and
-    a genuinely unseen tile is marked reachable but not expanded past (see
-    tile_ever_seen) - ignorance stays permissive rather than a wall, without
-    letting the search wander unboundedly into the fog.
-
-    `cap` now bounds nodes actually expanded (popped and processed), same
-    definition astar_targets uses - not total tiles discovered - so it's a
-    much tighter, more meaningful budget than before: with this ordering,
-    reaching a target N tiles away costs roughly N expansions, not O(N^2)."""
     start_key = (start.x, start.y)
     seen = {start_key}
     remaining = None
@@ -178,12 +156,12 @@ def terrain_reachable(start, cap=81, targets=None):
         return min(key_dist(pos_key, t) for t in remaining) if remaining else 0
 
     counter = 0
-    heap = [(heuristic(start_key), counter, start)]
+    heap = [(heuristic(start_key), 0, counter, start)]   # (f, g, tiebreak, pos)
     visited = set()
     expanded = 0
 
     while heap and expanded < cap:
-        _, _, pos = heapq.heappop(heap)
+        _, g, _, pos = heapq.heappop(heap)
         pos_key = (pos.x, pos.y)
         if pos_key in visited:
             continue
@@ -204,8 +182,9 @@ def terrain_reachable(start, cap=81, targets=None):
                     return seen
             if not tile_ever_seen(nxt):
                 continue   # fringe: reachable, but don't expand past it
+            new_g = g + 1
             counter += 1
-            heapq.heappush(heap, (heuristic(key), counter, nxt))
+            heapq.heappush(heap, (new_g + heuristic(key), new_g, counter, nxt))
 
     return seen
  
