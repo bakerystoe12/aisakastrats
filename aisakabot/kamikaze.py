@@ -1,3 +1,11 @@
+import state
+import search
+import heapq
+import time
+import memory
+from helper import EdgeType
+
+
 # ---------- kamikaze: aggressive-only kill sprint, gated on trade value ----------
 #
 # stepping onto another dragon's head kills both of you (see DragonPart.is_head's
@@ -25,12 +33,12 @@ KAMIKAZE_MIN_LENGTH_RATIO = 1.1   # only trade if the enemy's VISIBLE length is 
 def nearest_enemy_head(others):
     """Closest visible enemy head, or None. Never a body segment - see the
     section note above for why."""
-    here = ct.get_position()
-    my_team = ct.get_team()
+    here = state.ct.get_position()
+    my_team = state.ct.get_team()
     heads = [p for p in others if p.is_head() and p.get_team() != my_team]
     if not heads:
         return None
-    return min(heads, key=lambda p: dist(here, p.get_position()))
+    return min(heads, key=lambda p: search.dist(here, p.get_position()))
 
 
 def visible_enemy_length(target, others):
@@ -50,7 +58,7 @@ def trade_is_favorable(target, others):
     look break-even or better - we have no way to know a trade that looks
     bad is secretly good, only that one that already looks good might be
     even better once their off-screen segments are counted too."""
-    our_length = ct.get_length()
+    our_length = state.ct.get_length()
     their_visible = visible_enemy_length(target, others)
     return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO
 
@@ -73,7 +81,7 @@ def path_onto(here, target_pos, cap=49, deadline=None):
     dist_to = {here: 0}
 
     def h(pos):
-        return dist(pos, target_pos)
+        return search.dist(pos, target_pos)
 
     counter = 0
     heap = [(h(here), 0, counter, here)]
@@ -97,16 +105,16 @@ def path_onto(here, target_pos, cap=49, deadline=None):
 
         if deadline is not None:
             popped += 1
-            if popped % BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
+            if popped % state.BFS_DEADLINE_CHECK_EVERY == 0 and time.perf_counter() >= deadline:
                 return None
         if len(dist_to) >= cap:
             return None
 
-        for d in DIRS:
-            if known_edge_type(pos, d) != EdgeType.EMPTY:
+        for d in state.DIRS:
+            if memory.known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
             nxt = pos.add_dir(d)
-            if nxt != target_pos and known_occupied(nxt):
+            if nxt != target_pos and memory.known_occupied(nxt):
                 continue   # anyone else's body still blocks a detour through it
             new_g = g + 1
             if nxt not in dist_to or new_g < dist_to[nxt]:
@@ -125,7 +133,7 @@ def kamikaze_charge(others, deadline=None):
     least as much as we are. Returns True if it sent a sprint this turn,
     else False (nothing to do, nothing reachable in one turn, or the trade
     doesn't look worth it)."""
-    if not AGGRESSIVE:
+    if not state.AGGRESSIVE:
         return False
 
     target = nearest_enemy_head(others)
@@ -135,16 +143,16 @@ def kamikaze_charge(others, deadline=None):
     if not trade_is_favorable(target, others):
         return False
 
-    here = ct.get_position()
+    here = state.ct.get_position()
     path = path_onto(here, target.get_position(), deadline=deadline)
     if not path:
         return False
 
     # a sprint of n steps costs n - 1 segments, so length must exceed n
-    if len(path) >= ct.get_length():
+    if len(path) >= state.ct.get_length():
         return False
 
-    ct.make_moves(path)
+    state.ct.make_moves(path)
     return True
 
 # ---------- kamikaze dodge: safe dragons flee a shorter enemy that could trade with us ----------
@@ -173,13 +181,13 @@ def enemy_can_reach(enemy_pos, here, max_steps):
     completely unable to reach each other - which was making the dodge
     shed tail (a real, permanent cost) against threats that were never
     actually live."""
-    reachable = terrain_reachable(enemy_pos, cap=16, targets={(here.x, here.y)})
+    reachable = search.terrain_reachable(enemy_pos, cap=16, targets={(here.x, here.y)})
     return (here.x, here.y) in reachable
 
 def kamikaze_threat(others):
-    here = ct.get_position()
-    my_team = ct.get_team()
-    our_length = ct.get_length()
+    here = state.ct.get_position()
+    my_team = state.ct.get_team()
+    our_length = state.ct.get_length()
     best = None
     best_dist = None
     for part in others:
@@ -187,12 +195,12 @@ def kamikaze_threat(others):
             continue
         if visible_enemy_length(part, others) >= our_length:
             continue
-        d = dist(here, part.get_position())
+        d = search.dist(here, part.get_position())
         if d <= KAMIKAZE_DODGE_CLOSE_RANGE:
             threatening = True
         elif d <= KAMIKAZE_DODGE_SPRINT_RANGE:
             nxt = part.get_position().add_dir(part.get_dir())
-            threatening = dist(here, nxt) < d
+            threatening = search.dist(here, nxt) < d
         else:
             threatening = False
 
@@ -212,15 +220,15 @@ def kamikaze_dodge_split(others):
     veto and tier 2's room-based dead-end avoidance for free, instead of
     away_from's un-room-checked movement, which is what walked us into a
     dead end - see the pink-portal incident."""
-    if AGGRESSIVE:
+    if state.AGGRESSIVE:
         return False
     threat = kamikaze_threat(others)
     if threat is None:
         return False
     
-    child = max(2, ct.get_length() - 2)
-    if ct.can_split(child):
-        ct.do_split(child)
+    child = max(2, state.ct.get_length() - 2)
+    if state.ct.can_split(child):
+        state.ct.do_split(child)
         return True
     return False
 
