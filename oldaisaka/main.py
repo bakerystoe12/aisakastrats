@@ -87,10 +87,15 @@ DIRS = Direction.get_direction_list()
 
 LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
-random.seed(14)
+
 # ---------- helpers ----------
 OWN_BODY = deque()      # our own body, head first, tail last - exact, not remembered/stale
 OWN_BODY_SET = set()    # same positions, rebuilt each turn, for O(1) lookups
+
+PEARL_CAPABLE = set()   # (x, y) tiles we've ever seen that CAN spawn a pearl
+                         # (pearl_time != -1) - remembered forever, same
+                         # reasoning as KNOWN_EDGES: capability is static,
+                         # only the countdown itself is transient.
 
 
 def update_own_body():
@@ -132,30 +137,6 @@ def stable_roll(key):
     return int(h[:8], 16) / 0xFFFFFFFF
 
 def terrain_reachable(start, cap=81, targets=None):
-    """Flood fill using only known edge terrain (kelp vs empty), ignoring
-    dragons and danger entirely - kelp never moves, so this answers a
-    narrower, more stable question than bfs_targets does: 'is there any
-    possible route at all', not 'is there a route that's clear and safe
-    right now'. Uses the same remembered-edge memory as bfs_targets, so it
-    can see past the current 7x7 window for targets near the edge of view.
-    Portal edges don't count as passable here either, same reasoning as
-    everywhere else: we can't compute where they lead.
-
-    If `targets` is given, the flood fill stops as soon as every one of
-    those (x, y) tiles has been marked reached, instead of continuing on to
-    `cap` regardless. gather_pearl_targets only ever calls this to answer
-    "which of my candidate tiles can I actually reach", so once every
-    candidate is already confirmed in `seen`, exploring further tells it
-    nothing new about the one question it's asking - this makes the common
-    case (a couple of nearby pearls) cost a handful of steps instead of the
-    full cap, while the pathological-kelp-maze case still safely falls back
-    to running out at `cap`.
-
-    Returns the set of (x, y) tiles reached within `cap` steps. Since every
-    pearl target comes from gather_pearl_targets, which only looks at the
-    current 7x7 window, they're all close to `start` - this basically never
-    needs anywhere near the full cap in practice, it's just a safety valve
-    against a pathological kelp maze."""
     start_key = (start.x, start.y)
     seen = {start_key}
     remaining = None
@@ -164,9 +145,29 @@ def terrain_reachable(start, cap=81, targets=None):
         remaining.discard(start_key)
         if not remaining:
             return seen
-    queue = deque([start])
-    while queue and len(seen) < cap:
-        pos = queue.popleft()
+
+    def key_dist(a, b):
+        w, h = WIDTH, HEIGHT
+        dx = abs(a[0] - b[0]); dx = min(dx, w - dx)
+        dy = abs(a[1] - b[1]); dy = min(dy, h - dy)
+        return dx + dy
+
+    def heuristic(pos_key):
+        return min(key_dist(pos_key, t) for t in remaining) if remaining else 0
+
+    counter = 0
+    heap = [(heuristic(start_key), 0, counter, start)]   # (f, g, tiebreak, pos)
+    visited = set()
+    expanded = 0
+
+    while heap and expanded < cap:
+        _, g, _, pos = heapq.heappop(heap)
+        pos_key = (pos.x, pos.y)
+        if pos_key in visited:
+            continue
+        visited.add(pos_key)
+        expanded += 1
+
         for d in DIRS:
             if known_edge_type(pos, d) != EdgeType.EMPTY:
                 continue
@@ -175,11 +176,16 @@ def terrain_reachable(start, cap=81, targets=None):
             if key in seen:
                 continue
             seen.add(key)
-            queue.append(nxt)
             if remaining is not None:
                 remaining.discard(key)
                 if not remaining:
                     return seen
+            if not tile_ever_seen(nxt):
+                continue   # fringe: reachable, but don't expand past it
+            new_g = g + 1
+            counter += 1
+            heapq.heappush(heap, (new_g + heuristic(key), new_g, counter, nxt))
+
     return seen
  
  
@@ -219,7 +225,16 @@ def gather_pearl_targets(here, tiles):
  
     candidate_positions = {(pos.x, pos.y) for pos, _ in candidates}
     reachable = terrain_reachable(here, targets=candidate_positions)
-    return [(pos, pt) for pos, pt in candidates if (pos.x, pos.y) in reachable]
+
+    targets = []
+    for pos, pt in candidates:
+        key = (pos.x, pos.y)
+        if key not in reachable:
+            continue
+        PEARL_CAPABLE.add(key)
+        targets.append((pos, pt))
+
+    return targets
 
 def pearl_dist(pos, targets):
     """Turns until pos could plausibly collect the best target: whichever is
@@ -228,6 +243,39 @@ def pearl_dist(pos, targets):
     if not targets:
         return 0
     return min(max(dist(pos, p), t) for p, t in targets)
+
+
+# ---------- pearl clusters: prefer a dense patch over scattered singles ----------
+
+CLUSTER_RADIUS = 2      # pearls within this many tiles (Manhattan) of each
+                         # other count as part of the same cluster
+CLUSTER_MIN_SIZE = 6    # need at least this many pearls packed that tightly
+                         # before we call it "a cluster" - anything looser is
+                         # just handled as ordinary individual pearl-seeking
+
+
+def find_pearl_cluster(targets):
+    """Look for a tight group of at least CLUSTER_MIN_SIZE pearls among
+    `targets` (all within CLUSTER_RADIUS of one shared pearl). If one exists,
+    return just that group so the caller paths toward the dense patch instead
+    of splitting attention across every stray pearl on the board. Returns
+    None when nothing that dense is around, so normal pearl-seeking (every
+    target, closest first) applies as before.
+
+    Deliberately simple: targets is at most a few dozen entries (one 7x7
+    vision window's worth), so a plain O(n^2) distance check per turn is
+    cheap - no need for real spatial indexing here."""
+    if len(targets) < CLUSTER_MIN_SIZE:
+        return None
+
+    positions = [p for p, _ in targets]
+    best_group = None
+    for p in positions:
+        group = [t for t, q in zip(targets, positions) if dist(p, q) <= CLUSTER_RADIUS]
+        if len(group) >= CLUSTER_MIN_SIZE:
+            if best_group is None or len(group) > len(best_group):
+                best_group = group
+    return best_group
 
 
 def split_room(start, came_from, needed, bfs_cap = 50):
@@ -1022,6 +1070,15 @@ def cheap_fallback_direction(moves, others, targets):
 def choose_direction(others, round_num, tiles, deadline=None):
     here = ct.get_position()
     targets = gather_pearl_targets(here, tiles)
+
+    # If a dense cluster of pearls is sitting nearby, chase that instead of
+    # whatever lone pearl happens to be a tile or two closer - a cluster is
+    # worth more total length, so it should win the tie even against a
+    # slightly nearer single spawn.
+    cluster = find_pearl_cluster(targets)
+    if cluster:
+        targets = cluster
+
     # Derived once and reused across every candidate direction below, rather
     # than re-derived from `targets` on each of the up to 4 pearl_dist_astar
     # calls this turn.
@@ -1033,6 +1090,7 @@ def choose_direction(others, round_num, tiles, deadline=None):
             d, pid = random.choice(portals)
             remember_portal_crossing(pid, round_num)
             return d
+
 
     # tier 1: drop anything blocked
     moves = {}
@@ -1200,7 +1258,7 @@ def execute_turn() -> None:                                                     
     if kamikaze_dodge_split(others):
         return
 
-    if round_num > 425 and not enemy_nearby(others) and round_num < 495: # activate feeding
+    if round_num > 400 and not enemy_nearby(others) and round_num < 490: # activate feeding
         if seppuku_conditions(others):
             suicide()
             return
@@ -1245,6 +1303,9 @@ def seppuku_conditions(others):
                     max_visible_length = ally_length
     max_avg = (max_length + max_visible_length + max_visible_length) / 3
 
+    if ct.get_length() < max_visible_length:
+        return ally_found
+
     if ct.get_length() < max_avg * 0.8:
         return ally_found
     return False
@@ -1267,18 +1328,18 @@ def main() -> None:
 
 
         if rolled == False:
-            progress = (round_num - 1) / 400                            # 0 at start, 1 around round 350
+            progress = (round_num - 1) / 500                            # 0 at start, 1 around round 350
             AGGRO_CHANCE = max(1 - 0.5 * progress, 0.3)                        # 100% -> floors at 40%
             AGGRESSIVE = stable_roll(ct.get_id()) < AGGRO_CHANCE                     # heavy subject to change
             rolled = True
-            if round_num < 100:
+            if round_num < 250:
                 AGGRESSIVE = True
 
 
         if ct.get_length() > 5 and round_num > 1:    # Prevention from desperate split child from becoming aggressive
             AGGRESSIVE = False
 
-        execute_turn()
+        execute_turn()  
         send_sonar_report()   # sonars fire after our action, so send after the move
         unswbc.end_turn()
 

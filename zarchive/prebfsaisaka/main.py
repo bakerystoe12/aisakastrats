@@ -14,8 +14,8 @@ are the one exception to that veto: we genuinely can't see what's on the other
 side of a portal, so there's nothing to check - it's a gamble kept exclusive
 to the aggressive style on purpose.
 """
-import helper as unswbc
-from helper import Direction, EdgeType
+import zarchive.prebfsaisaka.helper as unswbc
+from zarchive.prebfsaisaka.helper import Direction, EdgeType
 import random
 from collections import deque
 
