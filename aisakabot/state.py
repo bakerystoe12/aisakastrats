@@ -11,10 +11,12 @@ HEIGHT = None
 
 WIDTH = None
 
-# --------------------------- SEARCH CAPS-----------------------
+SONAR3 = False
+
+# --------------------------- SEARCH CAPS-----------------------  
 BFS_CAP = 120              # was 300 - this is the dominant per-turn cost (see
                             # bfs_targets), and pearl_dist_bfs reruns it fresh
-                            # for every candidate direction, so this roughly
+                            # for every candidate direction, so this roughly     
                             # linearly scales the most expensive part of a turn.
                             # Pearls this far away rarely win a tie anyway.
 

@@ -164,7 +164,7 @@ def kamikaze_charge(others, deadline=None):
 # nothing to gain from that fight, so as soon as a visibly-shorter enemy head
 # is close enough to plausibly land the hit, or is lined up and heading
 # straight for us, we shed a small chunk of tail (less to lose if it still
-# connects) and turn to move away from it - a simple override that takes
+# connects) and turn to move away from it - a simple override that takes 
 # priority over the normal pearl-seeking/danger-scoring move.
 
 KAMIKAZE_DODGE_CLOSE_RANGE = 2     # a shorter enemy head this close could

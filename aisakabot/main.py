@@ -59,7 +59,7 @@ def execute_turn() -> None:                                                     
     if d is None:
         d = decision.last_resort(round_num)
         if d is None:
-            return   # last_resort already split; no move to send
+            return   # last_resort already split; no move to send      
     ct.make_move(d)
 
 # ---------- boilerplate ----------
@@ -74,6 +74,8 @@ def main() -> None:
     rolled = False
 
     w, h = game.get_map_size()
+
+    state.SONAR3 = hasattr(ct, "get_sonar_echoes")
 
     state.WIDTH = w
     state.HEIGHT = h

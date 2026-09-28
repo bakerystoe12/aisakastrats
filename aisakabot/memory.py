@@ -11,13 +11,13 @@ from helper import Direction, EdgeType
 #    1 bit   mode        - 1 = aggressive, 0 = safe
 #    7 bits  length      - capped at 127
 #   12 bits  dragon id   - low 12 bits of the id
-#    2 bits  kelp count  - how many of the 2 kelp slots below are real (0-2)
+#    2 bits  kelp count  - how many of the 2 kelp slots below are real (0-2) 
 #   13 bits  kelp slot 1 \_ each = x (6 bits), y (6 bits), which edge (1 bit)
 #   13 bits  kelp slot 2 /   maps are at most 64x64, so 6 bits per coordinate
 #
 # A kelp "edge" sits between two tiles, so both tiles could describe it. To keep
 # one name per edge we always store it as the NORTH edge (0) or WEST edge (1) of
-# a tile - see edge_key().
+# a tile - see edge_key().  
 
 SONAR_MAGIC = 0xA15A
 REPORT_LAYOUT = [16, 1, 7, 12, 2, 13, 13]
@@ -82,6 +82,8 @@ def send_sonar_report():
     """Call once per turn, after our move. Sends one report out of each side
     (a sonar stops at the first thing it hits, so more directions = more chances
     of reaching a teammate), each carrying a different slice of our kelp map."""
+    if not state.SONAR3:
+        return
     for d in state.DIRS:
         state.ct.send_sonar(d, encode_report(next_kelp_chunk()))
 

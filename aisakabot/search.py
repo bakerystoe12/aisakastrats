@@ -94,7 +94,7 @@ def is_fatal(pos, fatal_zone):
 
 # ------------------- Room, split_room and terrain_reachable ------------------------------
 
-def room(start, came_from, cap, deadline=None):
+def room(start, came_from, cap=81, deadline=None):
     """Flood fill from start over free tiles in view. Returns how many tiles are
     reachable, stopping at cap, or early if deadline is hit (returns the
     count reached so far, which tier 2 then treats as an underestimate -

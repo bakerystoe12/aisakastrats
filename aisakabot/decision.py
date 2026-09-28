@@ -256,9 +256,9 @@ def choose_direction(others, round_num, tiles, deadline=None):
                      ally_crowding(p, others), d != facing, random.random())
     else:
         # tiers 3 and 4: least danger first (danger already down-weights
-        # enemy-head proximity gradually), then closest to a pearl by real
+        # enemy-head proximity gradually), then closest to a pearl by real 
         # A* shortest-path distance, still avoiding fatal tiles in routing
-        def key(d):
+        def key(d): 
             p = moves[d]
             return (danger(p, others),
                      search.pearl_dist_astar(p, targets, fatal_zone, deadline=deadline, avoid_fatal=True,
