@@ -189,7 +189,7 @@ def choose_direction(others, round_num, tiles, deadline=None):
 
     if state.AGGRESSIVE and not targets:
         portals = search.portal_directions(here, round_num)
-        if portals and random.random() < state.PORTAL_CHANCE:
+        if portals:
             d, pid = random.choice(portals)
             memory.remember_portal_crossing(pid, round_num)
             return d

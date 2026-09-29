@@ -116,21 +116,39 @@ def read_sonar(round_num):
 
 def remember_vision(tiles):
     """Fold everything currently visible into memory. Call once per turn,
-    before making any decisions, so this turn's own tiles are included."""
+    before making any decisions, so this turn's own tiles are included.
+ 
+    Terrain (edges, kelp, portals) is static once seen, so a tile already
+    present in KNOWN_EDGES has nothing left to learn on the terrain side -
+    re-fetching and re-storing all 4 edges, and re-registering kelp/portals
+    that are already known, was pure waste every single turn for all 49
+    visible tiles regardless of whether any of it could possibly have
+    changed. After the first turn, only genuinely new tiles at the edge of
+    vision (as the window shifts with our head) need that work at all.
+ 
+    Pearl state is the opposite: it's the one thing on a tile that's
+    NOT static (spawn countdown ticks, has_pearl toggles), so
+    remember_pearl runs unconditionally on every visible tile every turn,
+    outside the KNOWN_EDGES skip - freezing it at whatever it happened to
+    be the first time we ever saw that tile would silently break every
+    pearl-timing decision downstream."""
     now = state.game.get_round_num()
     for tile in tiles:
         pos = tile.get_position()
         key = (pos.x, pos.y)
-        edges = {}
-        for d in state.DIRS:
-            edge = tile.get_edge(d)
-            edge_type = edge.get_edge_type()
-            edges[d] = edge_type
-            if edge_type == EdgeType.KELP:
-                add_kelp(edge_key(pos, d))   # sonar: remember it so we can tell teammates
-            elif edge_type == EdgeType.PORTAL:
-                remember_portal(edge_key(pos, d), edge.get_portal_id())
-        state.KNOWN_EDGES[key] = edges
+ 
+        if key not in state.KNOWN_EDGES:
+            edges = {}
+            for d in state.DIRS:
+                edge = tile.get_edge(d)
+                edge_type = edge.get_edge_type()
+                edges[d] = edge_type
+                if edge_type == EdgeType.KELP:
+                    add_kelp(edge_key(pos, d))   # sonar: remember it so we can tell teammates
+                elif edge_type == EdgeType.PORTAL:
+                    remember_portal(edge_key(pos, d), edge.get_portal_id())
+            state.KNOWN_EDGES[key] = edges
+ 
         remember_pearl(key, tile, now)
 
 
