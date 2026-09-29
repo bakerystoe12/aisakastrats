@@ -117,14 +117,49 @@ def read_sonar(round_num):
 def remember_vision(tiles):
     """Fold everything currently visible into memory. Call once per turn,
     before making any decisions, so this turn's own tiles are included."""
+    now = state.game.get_round_num()
     for tile in tiles:
         pos = tile.get_position()
         key = (pos.x, pos.y)
-        edges = {d: tile.get_edge(d).get_edge_type() for d in state.DIRS}
-        state.KNOWN_EDGES[key] = edges
-        for d, edge_type in edges.items():
+        edges = {}
+        for d in state.DIRS:
+            edge = tile.get_edge(d)
+            edge_type = edge.get_edge_type()
+            edges[d] = edge_type
             if edge_type == EdgeType.KELP:
                 add_kelp(edge_key(pos, d))   # sonar: remember it so we can tell teammates
+            elif edge_type == EdgeType.PORTAL:
+                remember_portal(edge_key(pos, d), edge.get_portal_id())
+        state.KNOWN_EDGES[key] = edges
+        remember_pearl(key, tile, now)
+
+
+# ---------- pearl memory ----------
+
+def remember_pearl(key, tile, round_num):
+    """Record what this tile told us about pearls. A tile that reports
+    pearl_time == -1 can never spawn a pearl; that is static, so once it is
+    stored as -1 there is nothing more to learn from it and we skip it."""
+    pearl_time = tile.get_pearl_time()
+    old = state.PEARL_MEMORY.get(key)
+    if pearl_time == -1 and old is not None and old["pearl_time"] == -1:
+        return
+    state.PEARL_MEMORY[key] = {
+        "pearl_time": pearl_time,        # -1 = can never spawn a pearl
+        "has_pearl": tile.has_pearl(),
+        "round": round_num,
+    }
+
+
+# ---------- portal memory ----------
+
+def remember_portal(ekey, portal_id):
+    """Store one portal edge. edge_key gives an edge a single name no matter
+    which of its two tiles saw it, so the same edge is only ever added once."""
+    if ekey in state.PORTAL_EDGES:
+        return
+    state.PORTAL_EDGES[ekey] = portal_id
+    state.PORTALS.setdefault(portal_id, []).append(ekey)
 
 
 def known_edge_type(pos, d):
@@ -213,4 +248,3 @@ def update_own_body():
 def remember_portal_crossing(pid, round_num):
     state.LAST_PORTAL_ID = pid
     state.LAST_PORTAL_ROUND = round_num
-

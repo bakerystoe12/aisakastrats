@@ -58,6 +58,20 @@ KNOWN_EDGES = {}       # (x, y) -> {Direction: EdgeType}, remembered forever onc
 LAST_PORTAL_ID = -1          # portal_id of the last portal we crossed, or -1 if none yet
 
 LAST_PORTAL_ROUND = -10**9   # round we crossed it, far in the past so the cooldown starts expired
+
+# ---- pearl memory ----
+# (x, y) -> {"pearl_time": int, "has_pearl": bool, "round": int}
+#   pearl_time = rounds until the tile next tries to spawn a pearl, as of `round`
+#                -1  => this tile can NEVER spawn a pearl (static, never changes)
+#   has_pearl  = whether a pearl was there when we last saw the tile
+#   round      = the round we last saw the tile
+PEARL_MEMORY = {}
+
+# ---- portal memory ----
+# Portal ids come from the game: both ends of one portal share the same id.
+PORTAL_EDGES = {}   # edge_key (x, y, 0|1) -> portal id
+PORTALS = {}        # portal id -> [edge_key, ...]  (ends we've seen, at most 2)
+
 # Per-turn memoization for known_edge_type/known_occupied. Every flood fill
 # and A* run (room, terrain_reachable, astar_targets, path_onto) re-asks
 # these same questions about the same handful of tiles near our head over

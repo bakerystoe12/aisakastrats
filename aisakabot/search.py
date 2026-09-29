@@ -126,7 +126,7 @@ def room(start, came_from, cap=81, deadline=None):
             queue.append(nxt)
     return count
 
-def split_room(start, came_from, needed, bfs_cap = 50):
+def split_room(start, came_from, needed, bfs_cap = 30):
     """Flood fill from start over free tiles in view, same traversal rules as
     room() (kelp/dragons block, unseen tiles beyond the fringe count as
     'plenty of room'), but a tile that currently has a pearl or will spawn
