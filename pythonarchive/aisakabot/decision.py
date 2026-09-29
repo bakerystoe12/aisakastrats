@@ -1,7 +1,7 @@
-import state
-import search
-import helper as unswbc
-import memory
+import pythonarchive.aisakabot.state as state
+import pythonarchive.aisakabot.search as search
+import pythonarchive.aisakabot.helper as unswbc
+import pythonarchive.aisakabot.memory as memory
 import random
 import time
 

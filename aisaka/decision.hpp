@@ -144,97 +144,422 @@ namespace Decision {
         return false;
     }
 
-    std::optional<unswbc::Direction> choose_direction(const std::vector<unswbc::DragonPart*>& others, int round_num, const std::vector<unswbc::Tile>& tiles, double deadline) {
+    std::optional<unswbc::Direction> choose_direction(
+        const std::vector<unswbc::DragonPart*>& others,
+        int round_num,
+        const std::vector<unswbc::Tile>& tiles,
+        double* deadline
+    ) {
+
         unswbc::Position here = unswbc::ct->get_position();
+
         auto targets = Search::gather_pearl_targets(here, tiles);
-        
+
         auto cluster = Search::find_pearl_cluster(targets);
+
         if (!cluster.empty()) {
             targets = cluster;
         }
 
         std::vector<unswbc::Position> target_positions;
-        for (auto& t : targets) target_positions.push_back(t.first);
 
-        if (State::AGGRESSIVE && targets.empty()) {
-            auto portals = Search::portal_directions(here, round_num);
-            if (!portals.empty()) {
-                int pick = (round_num * 73 + here.x * 593 + here.y * 5119) % portals.size(); 
-                Memory::remember_portal_crossing(portals[pick].second, round_num);
-                return portals[pick].first;
+        for (auto& t : targets) {
+            target_positions.push_back(t.first);
+        }
+
+        std::unordered_map<
+            unswbc::Direction,
+            unswbc::Position,
+            DirectionHash
+        > moves;
+
+        for (auto d : unswbc::Direction::get_direction_list()) {
+            auto nxt = Search::open_step(here, d);
+
+            if (nxt) {
+                moves[d] = *nxt;
             }
         }
 
-        std::unordered_map<unswbc::Direction, unswbc::Position, DirectionHash> moves;
-        for (auto d : unswbc::Direction::get_direction_list()) {
-            auto nxt = Search::open_step(here, d);
-            if (nxt) moves[d] = *nxt;
-        }
-        if (moves.empty()) return std::nullopt;
+        auto portal_options =
+            Search::portal_directions(here, round_num);
 
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> fatal_zone;
+        std::unordered_set<
+            unswbc::Direction,
+            DirectionHash
+        > unknown_portals;
+
+        for (auto [d, pid] : portal_options) {
+            unswbc::Position destination;
+
+            if (Search::get_portal_destination(
+                    here,
+                    d,
+                    destination
+                )) {
+                moves[d] = destination;
+            } else {
+                unknown_portals.insert(d);
+            }
+        }
+
+        if (moves.empty() && unknown_portals.empty()) {
+            return std::nullopt;
+        }
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > fatal_zone;
+
         if (!State::AGGRESSIVE) {
             fatal_zone = Search::build_fatal_zone(others);
-            std::unordered_map<unswbc::Direction, unswbc::Position, DirectionHash> safe_moves;
-            for (auto& kv : moves) if (!Search::is_fatal(kv.second, fatal_zone)) safe_moves.insert(kv);
-            if (!safe_moves.empty()) moves = safe_moves;
+
+            std::unordered_map<
+                unswbc::Direction,
+                unswbc::Position,
+                DirectionHash
+            > safe_moves;
+
+            for (auto& kv : moves) {
+                if (!Search::is_fatal(
+                        kv.second,
+                        fatal_zone
+                    )) {
+                    safe_moves.insert(kv);
+                }
+            }
+
+            if (!safe_moves.empty()) {
+                moves = safe_moves;
+            }
         }
 
-        int needed = State::AGGRESSIVE ? unswbc::ct->get_length() : unswbc::ct->get_length() + 1;
-        std::unordered_map<unswbc::Direction, unswbc::Position, DirectionHash> roomy;
+        int needed =
+            State::AGGRESSIVE
+                ? unswbc::ct->get_length()
+                : unswbc::ct->get_length() + 1;
+
+        std::unordered_map<
+            unswbc::Direction,
+            unswbc::Position,
+            DirectionHash
+        > roomy;
+
         int best_space = -1;
+
         for (auto& kv : moves) {
-            int sp = Search::room(kv.second, here, needed, deadline);
+            int sp = Search::room(
+                kv.second,
+                here,
+                needed,
+                *deadline
+            );
+
             best_space = std::max(best_space, sp);
-            if (sp >= needed) roomy.insert(kv);
+
+            if (sp >= needed) {
+                roomy.insert(kv);
+            }
         }
-        if (!roomy.empty()) moves = roomy;
-        else {
-            std::unordered_map<unswbc::Direction, unswbc::Position, DirectionHash> best_moves;
-            for (auto& kv : moves) if (Search::room(kv.second, here, needed, deadline) == best_space) best_moves.insert(kv);
+
+        if (!roomy.empty()) {
+            moves = roomy;
+        } else {
+            std::unordered_map<
+                unswbc::Direction,
+                unswbc::Position,
+                DirectionHash
+            > best_moves;
+
+            for (auto& kv : moves) {
+                if (Search::room(
+                        kv.second,
+                        here,
+                        needed,
+                        *deadline
+                    ) == best_space) {
+                    best_moves.insert(kv);
+                }
+            }
+
             moves = best_moves;
         }
 
+        // ------------------------------------------------------------
+        // Pearl-memory exploration score
+        //
+        // Only relevant when there are no reachable pearl targets.
+        // Higher score = more remembered tiles that can potentially
+        // spawn pearls in that direction.
+        // ------------------------------------------------------------
+
+        std::unordered_map<
+            unswbc::Direction,
+            int,
+            DirectionHash
+        > pearl_memory_scores;
+        
+        std::unordered_map<
+            unswbc::Direction,
+            int,
+            DirectionHash
+        > unexplored_scores;
+
+        if (targets.empty()) {
+            for (auto& kv : moves) {
+                pearl_memory_scores[kv.first] =
+                    Search::pearl_spawn_score(
+                        kv.second,
+                        round_num,
+                        deadline
+                    );
+
+                unexplored_scores[kv.first] =
+                    Search::unexplored_score(
+                        kv.second
+                    );
+            }
+        }
+
         unswbc::Direction facing = unswbc::ct->get_dir();
-        double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        if (now >= deadline) {
-            unswbc::Direction best_d = moves.begin()->first;
+
+        double now =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()
+            ).count();
+
+        // ------------------------------------------------------------
+        // Time-pressure fallback
+        // ------------------------------------------------------------
+
+        if (now >= *deadline) {
+            unswbc::Direction best_d =
+                moves.begin()->first;
+
             auto score = [&](unswbc::Direction d) {
-                return std::make_tuple(Search::pearl_dist(moves[d], targets), danger(moves[d], others), direction_to_index(d));
+                int memory_score =
+                    pearl_memory_scores.count(d)
+                        ? pearl_memory_scores[d]
+                        : 0;
+
+                if (targets.empty()) {
+                    return std::make_tuple(
+                        -memory_score,
+                        Search::pearl_dist(
+                            moves[d],
+                            targets
+                        ),
+                        danger(
+                            moves[d],
+                            others
+                        ),
+                        direction_to_index(d)
+                    );
+                } else {
+                    return std::make_tuple(
+                        Search::pearl_dist(
+                            moves[d],
+                            targets
+                        ),
+                        static_cast<int>(
+                            d != unswbc::ct->get_dir()
+                        ),
+                        danger(
+                            moves[d],
+                            others
+                        ),
+                        direction_to_index(d)
+                    );
+                }
             };
+
             auto best_s = score(best_d);
+
             for (auto& kv : moves) {
                 auto s = score(kv.first);
-                if (s < best_s) { best_s = s; best_d = kv.first; }
+
+                if (s < best_s) {
+                    best_s = s;
+                    best_d = kv.first;
+                }
             }
+
             return best_d;
         }
 
-        unswbc::Direction best_d = moves.begin()->first;
+        // ------------------------------------------------------------
+        // Normal decision-making
+        // ------------------------------------------------------------
+
+        unswbc::Direction best_d =
+            moves.begin()->first;
+
         if (State::AGGRESSIVE) {
+
             auto score = [&](unswbc::Direction d) {
-                return std::make_tuple(
-                    Search::pearl_dist_astar(moves[d], targets, fatal_zone, deadline, false, target_positions),
-                    ally_crowding(moves[d], others), d != facing, direction_to_index(d));
+
+                if (targets.empty()) {
+                    int memory_score =
+                        pearl_memory_scores.count(d)
+                            ? pearl_memory_scores[d]
+                            : 0;
+                        int unexplored_score =
+                        unexplored_scores.count(d)
+                        ? unexplored_scores[d]
+                        : 0;
+
+                    
+                    return std::make_tuple(
+                        -memory_score,
+                        -unexplored_score,
+                        d != facing,
+                        direction_to_index(d)
+                    );
+
+                } else {
+                    return std::make_tuple(
+                        Search::pearl_dist_astar(
+                            moves[d],
+                            targets,
+                            fatal_zone,
+                            *deadline,
+                            false,
+                            target_positions
+                        ), 0, // to make tuples the same
+                        d != facing,
+                        direction_to_index(d)
+                    );
+                }
             };
+
             auto best_s = score(best_d);
+
             for (auto& kv : moves) {
                 auto s = score(kv.first);
-                if (s < best_s) { best_s = s; best_d = kv.first; }
+
+                if (s < best_s) {
+                    best_s = s;
+                    best_d = kv.first;
+                }
             }
+
         } else {
+
             auto score = [&](unswbc::Direction d) {
-                return std::make_tuple(
-                    danger(moves[d], others),
-                    Search::pearl_dist_astar(moves[d], targets, fatal_zone, deadline, true, target_positions),
-                    d != facing, direction_to_index(d));
+
+                if (targets.empty()) {
+                    int memory_score =
+                        pearl_memory_scores.count(d)
+                            ? pearl_memory_scores[d]
+                            : 0;
+                        int unexplored_score =
+                            unexplored_scores.count(d)
+                            ? unexplored_scores[d]
+                            : 0;
+                        
+                    return std::make_tuple(
+                        danger(
+                            moves[d],
+                            others
+                        ),
+                        -memory_score,
+                        -unexplored_score,
+                        d != facing,
+                        direction_to_index(d)
+                    );
+
+                } else {
+                    return std::make_tuple(
+                        danger(
+                            moves[d],
+                            others
+                        ),
+                        0,  // to make the tuples the same
+                        Search::pearl_dist_astar(
+                            moves[d],
+                            targets,
+                            fatal_zone,
+                            *deadline,
+                            true,
+                            target_positions
+                        ),
+                        d != facing,
+                        direction_to_index(d)
+                    );
+                }
             };
+
             auto best_s = score(best_d);
+
             for (auto& kv : moves) {
                 auto s = score(kv.first);
-                if (s < best_s) { best_s = s; best_d = kv.first; }
+
+                if (s < best_s) {
+                    best_s = s;
+                    best_d = kv.first;
+                }
             }
         }
+
+        if (targets.empty() && !unknown_portals.empty()) {
+            unswbc::Direction portal_choice =
+                *unknown_portals.begin();
+
+            double best_portal_danger = 1e9;
+            int best_portal_facing = 2;
+            int best_portal_index = 100;
+
+            for (auto [portal_dir, portal_id] : portal_options) {
+                if (!unknown_portals.count(portal_dir)) {
+                    continue;
+                }
+
+                unswbc::Position entrance =
+                    here.add_dir(portal_dir);
+
+                // Defensive bots should still avoid an obviously
+                // dangerous portal entrance if another is available.
+                double portal_danger =
+                    danger(entrance, others);
+
+                int facing_penalty =
+                    (portal_dir != facing);
+
+                int dir_index =
+                    direction_to_index(portal_dir);
+
+                if (
+                    portal_danger < best_portal_danger ||
+                    (
+                        portal_danger == best_portal_danger &&
+                        facing_penalty < best_portal_facing
+                    ) ||
+                    (
+                        portal_danger == best_portal_danger &&
+                        facing_penalty == best_portal_facing &&
+                        dir_index < best_portal_index
+                    )
+                ) {
+                    portal_choice = portal_dir;
+                    best_portal_danger = portal_danger;
+                    best_portal_facing = facing_penalty;
+                    best_portal_index = dir_index;
+                }
+            }
+
+            for (auto [portal_dir, portal_id] : portal_options) {
+                if (portal_dir == portal_choice) {
+                    Memory::remember_portal_crossing(
+                        portal_id,
+                        round_num
+                    );
+
+                    return portal_dir;
+                }
+            }
+        }
+
         return best_d;
     }
 }

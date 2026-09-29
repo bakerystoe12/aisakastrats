@@ -1,5 +1,5 @@
-import helper as unswbc
-from helper import Direction, EdgeType
+import pythonarchive.oldaisaka.helper as unswbc
+from pythonarchive.oldaisaka.helper import Direction, EdgeType
 import random
 import time
 from collections import deque

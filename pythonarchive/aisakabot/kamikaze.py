@@ -1,9 +1,9 @@
-import state
-import search
+import pythonarchive.aisakabot.state as state
+import pythonarchive.aisakabot.search as search
 import heapq
 import time
-import memory
-from helper import EdgeType
+import pythonarchive.aisakabot.memory as memory
+from pythonarchive.aisakabot.helper import EdgeType
 
 
 # ---------- kamikaze: aggressive-only kill sprint, gated on trade value ----------

@@ -1,5 +1,5 @@
 from collections import deque
-from helper import Direction
+from pythonarchive.aisakabot.helper import Direction
 
 # -------------------- GAME -------------------------
 

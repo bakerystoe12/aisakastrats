@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <optional>
 
 
 
@@ -104,8 +105,8 @@ namespace Memory {
             if (known == State::KNOWN_EDGES.end()) {
                 if (State::KELP_EDGES.count(edge_key(pos, d))) {
                     result = unswbc::EdgeType::KELP;
-                } else if (!State::AGGRESSIVE) {
-                    result = unswbc::EdgeType::KELP;
+                } else{
+                    result = unswbc::EdgeType::EMPTY;
                 }
             } else {
                 result = known->second[direction_to_index(d)];
@@ -128,7 +129,7 @@ namespace Memory {
         }
         State::_OCCUPIED_CACHE[pos] = result;
         return result;
-    }
+    } 
 
     void update_own_body() {
         unswbc::Position here = unswbc::ct->get_position();

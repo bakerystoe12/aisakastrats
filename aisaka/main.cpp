@@ -75,7 +75,7 @@ void execute_turn() {
         }
     }
 
-    auto opt_d = Decision::choose_direction(others, round_num, tiles, deadline);
+    auto opt_d = Decision::choose_direction(others, round_num, tiles, &deadline);
     if (!opt_d.has_value()) {
         auto fallback = Decision::last_resort(round_num);
         if (fallback.has_value()) {

@@ -1,4 +1,4 @@
 # created by `unswbc init`
 [project]
-language = "py"
-include = [ "*.py" ]
+language = "c++"
+include = [ "*.cpp", "*.hpp", "*.cc", "*.hh", "*.c", "*.h" ]

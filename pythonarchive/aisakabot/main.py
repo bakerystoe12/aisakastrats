@@ -1,10 +1,10 @@
-import helper as unswbc
+import pythonarchive.aisakabot.helper as unswbc
 import time
 import hashlib
-import decision
-import memory
-import state
-import kamikaze
+import pythonarchive.aisakabot.decision as decision
+import pythonarchive.aisakabot.memory as memory
+import pythonarchive.aisakabot.state as state
+import pythonarchive.aisakabot.kamikaze as kamikaze
 
 ct: unswbc.Controller
 game: unswbc.Game

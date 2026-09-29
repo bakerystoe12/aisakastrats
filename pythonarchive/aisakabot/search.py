@@ -1,9 +1,9 @@
 import heapq
-import state
-import memory 
+import pythonarchive.aisakabot.state as state
+import pythonarchive.aisakabot.memory as memory 
 import time
 from collections import deque
-from helper import EdgeType, Direction
+from pythonarchive.aisakabot.helper import EdgeType, Direction
 
 # ---------------------- Helper ---------------------------------------
 

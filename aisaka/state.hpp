@@ -16,14 +16,17 @@ namespace State {
     inline bool SONAR3 = false;
     inline bool AGGRESSIVE = true;
 
-    inline const int BFS_CAP = 300;
-    inline const double TURN_TIME_BUDGET = 0.075;
+    inline const int DEAD_REGION_MIN_TILES = 8;
+
+    inline const int BFS_CAP = 500;
+    inline const int UNEXPLORED_BFS_CAP = 500;
+    inline const double TURN_TIME_BUDGET = 0.1;
     inline const int BFS_DEADLINE_CHECK_EVERY = 4;
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 3;
     inline const double PEARL_ROOM_WEIGHT = 0.0;
     inline const double SPLIT_ROOM_MULTIPLIER = 1.5;
-    inline const int PEARL_SPAWN_HORIZON = 5;
+    inline const int PEARL_SPAWN_HORIZON = 10;
     inline const int SPLIT_MIN_LENGTH = 4;
     inline const double PORTAL_CHANCE = 1.0;
 

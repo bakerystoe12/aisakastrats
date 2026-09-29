@@ -1,5 +1,5 @@
-import state
-from helper import Direction, EdgeType
+import pythonarchive.aisakabot.state as state
+from pythonarchive.aisakabot.helper import Direction, EdgeType
 
 
 # ---------- sonar: share our mode, length, id and kelp map with teammates ----------

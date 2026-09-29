@@ -6,12 +6,64 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <optional>
 
 
 // ============================================================================
 // SEARCH
 // ============================================================================
 namespace Search {
+
+    struct SearchNeighbor {
+    unswbc::Position position;
+    int cost;
+    bool through_portal;
+    };
+
+    unswbc::Position portal_exit_position(uint64_t key) {
+    int x = static_cast<int>(key >> 32);
+    int y = static_cast<int>((key >> 1) & 0x7FFFFFFF);
+
+    return unswbc::Position(x, y);
+    }
+    bool get_portal_destination(
+    unswbc::Position pos,
+    unswbc::Direction d,
+    unswbc::Position& destination
+    ) {
+    uint64_t key = Memory::edge_key(pos, d);
+
+    auto edge_it = State::PORTAL_EDGES.find(key);
+
+    if (edge_it == State::PORTAL_EDGES.end())
+        return false;
+
+    int portal_id = edge_it->second;
+
+    auto portal_it = State::PORTALS.find(portal_id);
+
+    if (portal_it == State::PORTALS.end())
+        return false;
+
+    const auto& endpoints = portal_it->second;
+
+    // We only know where the portal goes if both
+    // ends have been discovered.
+    if (endpoints.size() != 2)
+        return false;
+
+    uint64_t other_key;
+
+    if (endpoints[0] == key)
+        other_key = endpoints[1];
+    else
+        other_key = endpoints[0];
+
+    destination = portal_exit_position(other_key);
+
+    return true;
+    }
+
     int dist(unswbc::Position a, unswbc::Position b) {
         int w = State::WIDTH, h = State::HEIGHT;
         int dx = std::abs(a.x - b.x); dx = std::min(dx, w - dx);
@@ -31,6 +83,42 @@ namespace Search {
         auto* ahead = unswbc::ct->get_tile(nxt);
         if (!ahead || ahead->get_dragon()) return std::nullopt;
         return nxt;
+    }
+
+    std::vector<SearchNeighbor> get_neighbors(
+    unswbc::Position pos,
+    int round_num
+    ) {
+    std::vector<SearchNeighbor> result;
+
+    for (auto d : unswbc::Direction::get_direction_list()) {
+
+        auto edge_type = Memory::known_edge_type(pos, d);
+
+        if (edge_type == unswbc::EdgeType::KELP)
+            continue;
+
+        if (edge_type == unswbc::EdgeType::EMPTY) {
+            result.push_back({
+                pos.add_dir(d),
+                1,
+                false
+            });
+            continue;
+        }
+
+        unswbc::Position destination;
+
+        if (get_portal_destination(pos, d, destination)) {
+            result.push_back({
+                destination,
+                1,
+                true
+            });
+        }
+    }
+
+    return result;
     }
 
     std::vector<std::pair<unswbc::Direction, int>> portal_directions(unswbc::Position pos, int round_num) {
@@ -64,67 +152,136 @@ namespace Search {
         return fatal_zone.count(pos) > 0;
     }
 
-    int room(unswbc::Position start, unswbc::Position came_from, int cap, double deadline = -1) {
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> seen = {came_from, start};
+    int room(
+        unswbc::Position start,
+        unswbc::Position came_from,
+        int cap,
+        double deadline = -1
+    ) {
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > seen = {came_from, start};
+
         std::deque<unswbc::Position> queue = {start};
+
         int count = 0;
         int timer = State::BFS_DEADLINE_CHECK_EVERY;
 
         while (!queue.empty()) {
-            unswbc::Position pos = queue.front(); queue.pop_front();
+            unswbc::Position pos = queue.front();
+            queue.pop_front();
+
             count++;
-            if (count >= cap) return cap;
+
+            if (count >= cap)
+                return cap;
 
             if (deadline > 0) {
                 if (--timer == 0) {
-                    double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                    if (now >= deadline) return count;
+                    double now =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now()
+                                .time_since_epoch()
+                        ).count();
+
+                    if (now >= deadline)
+                        return count;
+
                     timer = State::BFS_DEADLINE_CHECK_EVERY;
                 }
             }
 
-            for (auto d : unswbc::Direction::get_direction_list()) {
-                if (Memory::known_edge_type(pos, d) != unswbc::EdgeType::EMPTY) continue;
-                unswbc::Position nxt = pos.add_dir(d);
-                if (seen.count(nxt)) continue;
-                if (!tile_ever_seen(nxt)) return cap;
-                if (Memory::known_occupied(nxt)) continue;
+            for (auto neighbour :
+                get_neighbors(
+                    pos,
+                    unswbc::game->get_round_num()
+                )) {
+
+                unswbc::Position nxt = neighbour.position;
+
+                if (seen.count(nxt))
+                    continue;
+
+                if (!tile_ever_seen(nxt))
+                    return cap;
+
+                if (Memory::known_occupied(nxt))
+                    continue;
+
                 seen.insert(nxt);
                 queue.push_back(nxt);
             }
         }
+
         return count;
     }
 
-    double split_room(unswbc::Position start, unswbc::Position came_from, double needed, int bfs_cap = 100) {
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> seen = {came_from, start};
+        double split_room(
+        unswbc::Position start,
+        unswbc::Position came_from,
+        double needed,
+        int bfs_cap = 100
+    ) {
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > seen = {came_from, start};
+
         std::deque<unswbc::Position> queue = {start};
+
         double total = 0.0;
         int expanded = 0;
 
         while (!queue.empty()) {
-            if (total >= needed || expanded >= bfs_cap) break;
-            unswbc::Position pos = queue.front(); queue.pop_front();
+            if (total >= needed || expanded >= bfs_cap)
+                break;
+
+            unswbc::Position pos = queue.front();
+            queue.pop_front();
+
             expanded++;
 
             double weight = 1.0;
+
             auto* tile = unswbc::ct->get_tile(pos);
+
             if (tile) {
                 int pt = tile->get_pearl_time();
-                if (tile->has_pearl() || (0 <= pt && pt <= 25)) weight = State::PEARL_ROOM_WEIGHT;
+
+                if (
+                    tile->has_pearl() ||
+                    (0 <= pt &&
+                    pt <= 25)
+                ) {
+                    weight = State::PEARL_ROOM_WEIGHT;
+                }
             }
+
             total += weight;
 
-            for (auto d : unswbc::Direction::get_direction_list()) {
-                if (Memory::known_edge_type(pos, d) != unswbc::EdgeType::EMPTY) continue;
-                unswbc::Position nxt = pos.add_dir(d);
-                if (seen.count(nxt)) continue;
-                if (!tile_ever_seen(nxt)) return needed;
-                if (Memory::known_occupied(nxt)) continue;
+            for (auto neighbour :
+                get_neighbors(
+                    pos,
+                    unswbc::game->get_round_num()
+                )) {
+
+                unswbc::Position nxt = neighbour.position;
+
+                if (seen.count(nxt))
+                    continue;
+
+                if (!tile_ever_seen(nxt))
+                    return needed;
+
+                if (Memory::known_occupied(nxt))
+                    continue;
+
                 seen.insert(nxt);
                 queue.push_back(nxt);
             }
         }
+
         return total;
     }
 
@@ -138,46 +295,84 @@ namespace Search {
         }
     };
 
-    std::unordered_set<unswbc::Position, unswbc::PositionHash> terrain_reachable(unswbc::Position start, int cap, const std::unordered_set<unswbc::Position, unswbc::PositionHash>& targets) {
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> seen = {start};
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> remaining = targets;
-        remaining.erase(start);
-        if (remaining.empty() && !targets.empty()) return seen;
+    std::unordered_set<unswbc::Position, unswbc::PositionHash>
+    terrain_reachable(
+        unswbc::Position start,
+        int cap,
+        const std::unordered_set<unswbc::Position, unswbc::PositionHash>& targets
+    ) {
 
-        auto heuristic = [&](unswbc::Position p) {
-            int mn = 100000;
-            for (auto t : remaining) mn = std::min(mn, dist(p, t));
-            return remaining.empty() ? 0 : mn;
-        };
+    std::unordered_set<unswbc::Position, unswbc::PositionHash> seen = {start};
 
-        int counter = 0;
-        std::priority_queue<AStarNode, std::vector<AStarNode>, std::greater<AStarNode>> heap;
-        heap.push({heuristic(start), 0, counter, start});
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> visited;
-        int expanded = 0;
+    std::unordered_set<unswbc::Position, unswbc::PositionHash> remaining = targets;
 
-        while (!heap.empty() && expanded < cap) {
-            auto node = heap.top(); heap.pop();
-            if (visited.count(node.pos)) continue;
-            visited.insert(node.pos);
-            expanded++;
+    remaining.erase(start);
 
-            for (auto d : unswbc::Direction::get_direction_list()) {
-                if (Memory::known_edge_type(node.pos, d) != unswbc::EdgeType::EMPTY) continue;
-                unswbc::Position nxt = node.pos.add_dir(d);
-                if (seen.count(nxt)) continue;
-                seen.insert(nxt);
-                if (targets.size() > 0) {
-                    remaining.erase(nxt);
-                    if (remaining.empty()) return seen;
-                }
-                if (!tile_ever_seen(nxt)) continue;
-                counter++;
-                heap.push({node.g + 1 + heuristic(nxt), node.g + 1, counter, nxt});
-            }
-        }
+    if (remaining.empty() && !targets.empty())
         return seen;
+
+    int counter = 0;
+
+    std::priority_queue<
+        AStarNode,
+        std::vector<AStarNode>,
+        std::greater<AStarNode>
+    > heap;
+
+    heap.push({0, 0, counter, start});
+
+    std::unordered_set<unswbc::Position, unswbc::PositionHash> visited;
+
+    int expanded = 0;
+
+    while (!heap.empty() && expanded < cap) {
+
+        auto node = heap.top();
+        heap.pop();
+
+        if (visited.count(node.pos))
+            continue;
+
+        visited.insert(node.pos);
+        expanded++;
+
+        for (auto neighbour : get_neighbors(
+            node.pos,
+            unswbc::game->get_round_num()
+        )) {
+
+            unswbc::Position nxt = neighbour.position;
+
+            if (seen.count(nxt))
+                continue;
+
+            seen.insert(nxt);
+
+            if (!targets.empty()) {
+                remaining.erase(nxt);
+
+                if (remaining.empty())
+                    return seen;
+            }
+
+            if (!tile_ever_seen(nxt))
+                continue;
+
+            counter++;
+
+            int new_g = node.g + neighbour.cost;
+
+            heap.push({
+                new_g,
+                new_g,
+                counter,
+                nxt
+            });
+        }
     }
+
+    return seen;
+}
 
     std::vector<std::pair<unswbc::Position, int>> gather_pearl_targets(unswbc::Position here, const std::vector<unswbc::Tile>& tiles) {
         std::vector<std::pair<unswbc::Position, int>> candidates;
@@ -239,68 +434,355 @@ namespace Search {
         return best_group.empty() ? targets : best_group;
     }
 
-    std::unordered_map<unswbc::Position, int, unswbc::PositionHash> astar_targets(
-        unswbc::Position here, const std::unordered_set<unswbc::Position, unswbc::PositionHash>& fatal_zone,
-        const std::vector<unswbc::Position>& target_positions, int cap, double deadline, bool avoid_fatal) 
-    {
-        std::unordered_map<unswbc::Position, int, unswbc::PositionHash> dist_to;
-        dist_to[here] = 0;
-        if (target_positions.empty()) return dist_to;
+    std::unordered_map<
+        unswbc::Position,
+        int,
+        unswbc::PositionHash
+    > astar_targets(
+        unswbc::Position here,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& fatal_zone,
+        const std::vector<unswbc::Position>& target_positions,
+        int cap,
+        double deadline,
+        bool avoid_fatal
+    ) {
+        std::unordered_map<
+            unswbc::Position,
+            int,
+            unswbc::PositionHash
+        > dist_to;
 
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> remaining(target_positions.begin(), target_positions.end());
-        auto h = [&](unswbc::Position p) {
-            int mn = 100000;
-            for (auto t : remaining) mn = std::min(mn, dist(p, t));
-            return remaining.empty() ? 0 : mn;
-        };
+        dist_to[here] = 0;
+
+        if (target_positions.empty())
+            return dist_to;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > remaining(
+            target_positions.begin(),
+            target_positions.end()
+        );
 
         int counter = 0;
-        std::priority_queue<AStarNode, std::vector<AStarNode>, std::greater<AStarNode>> heap;
-        heap.push({h(here), 0, counter, here});
-        std::unordered_set<unswbc::Position, unswbc::PositionHash> visited;
+
+        std::priority_queue<
+            AStarNode,
+            std::vector<AStarNode>,
+            std::greater<AStarNode>
+        > heap;
+
+        heap.push({0, 0, counter, here});
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > visited;
+
         int timer = State::BFS_DEADLINE_CHECK_EVERY;
 
-        while (!heap.empty() && !remaining.empty() && dist_to.size() < static_cast<size_t>(cap)) {
-            auto node = heap.top(); heap.pop();
-            if (visited.count(node.pos)) continue;
+        while (
+            !heap.empty() &&
+            !remaining.empty() &&
+            dist_to.size() < static_cast<size_t>(cap)
+        ) {
+            auto node = heap.top();
+            heap.pop();
+
+            if (visited.count(node.pos))
+                continue;
+
             visited.insert(node.pos);
+
+            // We have reached one of our targets.
             remaining.erase(node.pos);
 
             if (deadline > 0) {
                 if (--timer == 0) {
-                    double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-                    if (now >= deadline) break;
+                    double now =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now()
+                                .time_since_epoch()
+                        ).count();
+
+                    if (now >= deadline)
+                        break;
+
                     timer = State::BFS_DEADLINE_CHECK_EVERY;
                 }
             }
 
-            for (auto d : unswbc::Direction::get_direction_list()) {
-                if (Memory::known_edge_type(node.pos, d) != unswbc::EdgeType::EMPTY) continue;
-                unswbc::Position nxt = node.pos.add_dir(d);
-                if (Memory::known_occupied(nxt)) continue;
-                if (avoid_fatal && is_fatal(nxt, fatal_zone)) continue;
-                int new_g = node.g + 1;
-                if (dist_to.find(nxt) == dist_to.end() || new_g < dist_to[nxt]) {
+            for (auto neighbour :
+                get_neighbors(
+                    node.pos,
+                    unswbc::game->get_round_num()
+                )) {
+
+                unswbc::Position nxt = neighbour.position;
+
+                if (Memory::known_occupied(nxt))
+                    continue;
+
+                if (
+                    avoid_fatal &&
+                    is_fatal(nxt, fatal_zone)
+                )
+                    continue;
+
+                int new_g = node.g + neighbour.cost;
+
+                if (
+                    dist_to.find(nxt) == dist_to.end() ||
+                    new_g < dist_to[nxt]
+                ) {
                     dist_to[nxt] = new_g;
+
                     counter++;
-                    heap.push({new_g + h(nxt), new_g, counter, nxt});
+
+                    heap.push({
+                        new_g,
+                        new_g,
+                        counter,
+                        nxt
+                    });
                 }
             }
         }
+
         return dist_to;
     }
 
-    int pearl_dist_astar(unswbc::Position pos, const std::vector<std::pair<unswbc::Position, int>>& targets,
-                         const std::unordered_set<unswbc::Position, unswbc::PositionHash>& fatal_zone,
-                         double deadline, bool avoid_fatal, const std::vector<unswbc::Position>& target_positions) 
-    {
-        if (targets.empty()) return 0;
-        auto dist_to = astar_targets(pos, fatal_zone, target_positions, State::BFS_CAP, deadline, avoid_fatal);
-        int best = 100000;
-        for (auto& t : targets) {
-            int turns = dist_to.count(t.first) ? std::max(dist_to[t.first], t.second) : std::max(dist(pos, t.first), t.second);
-            best = std::min(best, turns);
+
+    int unexplored_score(
+        unswbc::Position start
+    ) {
+        std::deque<std::pair<unswbc::Position, int>> queue;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+            > seen;
+
+        queue.push_back({start, 0});
+        seen.insert(start);
+
+        int score = 0;
+        int expanded = 0;
+
+        while (
+            !queue.empty() &&
+            expanded < State::BFS_CAP
+        ) {
+            auto [pos, distance] = queue.front();
+            queue.pop_front();
+
+            expanded++;
+
+            auto known_it =
+                State::KNOWN_EDGES.find(pos);
+
+            if (known_it == State::KNOWN_EDGES.end()) {
+                continue;
+            }
+
+            for (auto d :
+                unswbc::Direction::get_direction_list()) {
+
+                int index =
+                    direction_to_index(d);
+
+                auto edge_type =
+                    known_it->second[index];
+
+                if (edge_type == unswbc::EdgeType::KELP) {
+                    continue;
+                }
+
+                // Known portal
+                if (edge_type == unswbc::EdgeType::PORTAL) {
+                    unswbc::Position destination;
+
+                    if (!get_portal_destination(
+                            pos,
+                            d,
+                            destination
+                        )) {
+                        continue;
+                    }
+
+                    if (seen.count(destination)) {
+                        continue;
+                    }
+
+                    seen.insert(destination);
+
+                    int new_distance =
+                        distance + 1;
+
+                    if (
+                        State::KNOWN_EDGES.count(destination) == 0
+                    ) {
+                        // Closer unexplored frontier = larger score.
+                        score +=
+                            State::BFS_CAP - new_distance;
+
+                        continue;
+                    }
+
+                    if (Memory::known_occupied(destination)) {
+                        continue;
+                    }
+
+                    queue.push_back({
+                        destination,
+                        new_distance
+                    });
+
+                    continue;
+                }
+
+                // Known EMPTY edge
+                unswbc::Position nxt =
+                    pos.add_dir(d);
+
+                if (seen.count(nxt)) {
+                    continue;
+                }
+
+                seen.insert(nxt);
+
+                int new_distance =
+                    distance + 1;
+
+                // Known open edge -> unseen tile.
+                if (
+                    State::KNOWN_EDGES.count(nxt) == 0
+                ) {
+                    score +=
+                        State::BFS_CAP - new_distance;
+
+                    continue;
+                }
+
+                if (Memory::known_occupied(nxt)) {
+                    continue;
+                }
+
+                queue.push_back({
+                    nxt,
+                    new_distance
+                });
+            }
         }
+
+        return score;
+    }
+
+
+        int pearl_spawn_score(
+        unswbc::Position start,
+        int round_num,
+        double* deadline
+    ) {
+        std::unordered_set<unswbc::Position, unswbc::PositionHash> seen;
+        std::deque<unswbc::Position> queue;
+
+        seen.insert(start);
+        queue.push_back(start);
+
+        int score = 0;
+        int expanded = 0;
+        int timer = State::BFS_DEADLINE_CHECK_EVERY;
+
+        while (
+            !queue.empty() &&
+            expanded < State::BFS_CAP
+        ) {
+            auto pos = queue.front();
+            queue.pop_front();
+
+            expanded++;
+
+            // Check deadline periodically.
+            if (deadline != nullptr) {
+                if (--timer == 0) {
+                    double now =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now().time_since_epoch()
+                        ).count();
+
+                    if (now >= *deadline)
+                        break;
+
+                    timer = State::BFS_DEADLINE_CHECK_EVERY;
+                }
+            }
+
+            // Score this tile based on our pearl memory.
+            auto pearl_it = State::PEARL_MEMORY.find(pos);
+
+            if (pearl_it != State::PEARL_MEMORY.end()) {
+                if (pearl_it->second.pearl_time != -1) {
+                    score++;
+                }
+            }
+
+            // Explore through known passable terrain / known portals.
+            for (auto neighbour :
+                get_neighbors(pos, round_num)) {
+
+                if (seen.count(neighbour.position))
+                    continue;
+
+                seen.insert(neighbour.position);
+                queue.push_back(neighbour.position);
+            }
+        }
+
+        return score;
+    }
+
+
+    int pearl_dist_astar(
+        unswbc::Position pos,
+        const std::vector<std::pair<unswbc::Position, int>>& targets,
+        const std::unordered_set<unswbc::Position, unswbc::PositionHash>& fatal_zone,
+        double deadline,
+        bool avoid_fatal,
+        const std::vector<unswbc::Position>& target_positions
+    ) {
+        if (targets.empty())
+            return 0;
+
+        auto dist_to = astar_targets(
+            pos,
+            fatal_zone,
+            target_positions,
+            State::BFS_CAP,
+            deadline,
+            avoid_fatal
+        );
+
+        int best = 100000;
+
+        for (auto& t : targets) {
+
+            // If the target was reached by the portal-aware search,
+            // use the actual path distance.
+            if (dist_to.count(t.first)) {
+                int turns = std::max(
+                    dist_to[t.first],
+                    t.second
+                );
+
+                best = std::min(best, turns);
+            }
+        }
+
         return best;
     }
 }
