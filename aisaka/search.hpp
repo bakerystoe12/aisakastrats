@@ -560,44 +560,14 @@ namespace Search {
         unswbc::Position start,
         int round_num
     ) {
-        // ------------------------------------------------------------
-        // Continue pursuing the current exploration target.
-        // Stop once it has been reached, occupied, or becomes visible.
-        // ------------------------------------------------------------
-
-        if (State::EXPLORATION_TARGET.has_value()) {
-            unswbc::Position target =
-                State::EXPLORATION_TARGET.value();
-
-            // We reached the target.
-            if (start == target) {
-                State::EXPLORATION_TARGET.reset();
-            }
-            // Target is now occupied.
-            else if (Memory::known_occupied(target)) {
-                State::EXPLORATION_TARGET.reset();
-            }
-            // Target is now visible, so we have new information.
-            else if (unswbc::ct->get_tile(target) != nullptr) {
-                State::EXPLORATION_TARGET.reset();
-            }
-            else {
-                return target;
-            }
-        }
-
-        // ------------------------------------------------------------
-        // Find the nearest unexplored tile.
-        // ------------------------------------------------------------
-
-        std::deque<std::pair<unswbc::Position, int>> queue;
+        std::deque<unswbc::Position> queue;
 
         std::unordered_set<
             unswbc::Position,
             unswbc::PositionHash
         > seen;
 
-        queue.push_back({start, 0});
+        queue.push_back(start);
         seen.insert(start);
 
         int expanded = 0;
@@ -606,38 +576,54 @@ namespace Search {
             !queue.empty() &&
             expanded < State::UNEXPLORED_BFS_CAP
         ) {
-            auto [pos, distance] = queue.front();
-            queue.pop_front();
+            unswbc::Position pos =
+                queue.front();
 
+            queue.pop_front();
             expanded++;
 
             for (auto neighbour :
-                get_neighbors(pos, round_num)) {
+                get_neighbors(
+                    pos,
+                    round_num
+                )) {
 
                 unswbc::Position nxt =
                     neighbour.position;
 
-                if (seen.count(nxt)) {
+                // Already considered in this search.
+                if (seen.count(nxt))
                     continue;
-                }
+
+                // ----------------------------------------------------
+                // PERMANENT EXPLORATION MEMORY
+                //
+                // Never intentionally travel back through a tile
+                // the dragon has already visited.
+                // ----------------------------------------------------
+
+                if (State::EXPLORATION_VISITED.count(nxt))
+                    continue;
 
                 seen.insert(nxt);
 
-                // Check occupancy before accepting the frontier.
-                if (Memory::known_occupied(nxt)) {
+                if (Memory::known_occupied(nxt))
                     continue;
-                }
 
-                // First unexplored tile found by BFS.
-                if (State::KNOWN_EDGES.count(nxt) == 0) {
-                    State::EXPLORATION_TARGET = nxt;
+                // ----------------------------------------------------
+                // FRONTIER
+                //
+                // We have reached the edge of our known map without
+                // physically exploring this position yet.
+                // ----------------------------------------------------
+
+                if (!tile_ever_seen(nxt)) {
                     return nxt;
                 }
 
-                queue.push_back({
-                    nxt,
-                    distance + 1
-                });
+                // Known tile that we have never physically visited.
+                // Continue exploring through it.
+                queue.push_back(nxt);
             }
         }
 

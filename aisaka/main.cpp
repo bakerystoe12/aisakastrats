@@ -60,6 +60,10 @@ void execute_turn() {
     auto tiles = unswbc::ct->get_tiles();
     auto others = other_dragon_parts(tiles);
     
+
+    State::EXPLORATION_VISITED.insert(
+        unswbc::ct->get_position()
+    );
     Memory::update_own_body();
     Memory::remember_vision(tiles);
     Memory::read_sonar(round_num);

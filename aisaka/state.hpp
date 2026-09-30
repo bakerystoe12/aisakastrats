@@ -17,16 +17,18 @@ namespace State {
     inline bool AGGRESSIVE = true;
 
     inline const int BFS_CAP = 1000;
-    inline const int PEARL_BFS_CAP = 100;
     inline const int UNEXPLORED_BFS_CAP = 1000;
     inline const double TURN_TIME_BUDGET = 0.5;
     inline const int BFS_DEADLINE_CHECK_EVERY = 4;
 
-    inline std::optional<unswbc::Position> EXPLORATION_TARGET;
+    inline std::unordered_set<
+        unswbc::Position,
+        unswbc::PositionHash
+    > EXPLORATION_VISITED;
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 3;
     inline const double PEARL_ROOM_WEIGHT = 0.0;
-    inline const double SPLIT_ROOM_MULTIPLIER = 1.5;
+    inline const double SPLIT_ROOM_MULTIPLIER = 1;
     inline const int PEARL_SPAWN_HORIZON = 10;
     inline const int SPLIT_MIN_LENGTH = 4;
     inline const double PORTAL_CHANCE = 1.0;

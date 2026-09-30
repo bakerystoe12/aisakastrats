@@ -533,7 +533,6 @@ namespace Decision {
                 }
             }
         }
-
         return best_d;
     }
 }
