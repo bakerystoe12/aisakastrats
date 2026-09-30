@@ -560,49 +560,164 @@ namespace Search {
         unswbc::Position start,
         int round_num
     ) {
-        std::deque<unswbc::Position> queue;
+        struct Node {
+            unswbc::Position pos;
+            int distance;
+        };
+
+        /*
+        * First pass:
+        * Search locally for tiles that we can already see but have
+        * never physically visited.
+        *
+        * Vision radius is 3, so this is intentionally small.
+        * This helps the bot leave spawn quickly when the exit is
+        * already visible.
+        */
+        constexpr int LOCAL_SEARCH_DEPTH = 3;
+
+        std::deque<Node> local_queue;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > local_seen;
+
+        local_queue.push_back({start, 0});
+        local_seen.insert(start);
+
+        std::optional<unswbc::Position> best_local_target;
+        int best_local_distance = INT_MAX;
+        int best_local_frontier = -1;
+
+        while (!local_queue.empty()) {
+            Node current = local_queue.front();
+            local_queue.pop_front();
+
+            if (current.distance >= LOCAL_SEARCH_DEPTH)
+                continue;
+
+            for (const auto& neighbour :
+                get_neighbors(current.pos, round_num)) {
+
+                unswbc::Position nxt = neighbour.position;
+
+                if (local_seen.count(nxt))
+                    continue;
+
+                local_seen.insert(nxt);
+
+                if (Memory::known_occupied(nxt))
+                    continue;
+
+                int next_distance =
+                    current.distance + neighbour.cost;
+
+                /*
+                * We have never physically visited this tile.
+                *
+                * Score how much unexplored territory surrounds it.
+                * This helps prefer an actual exit/frontier over some
+                * random visible tile sitting in the middle of spawn.
+                */
+                if (!State::EXPLORATION_VISITED.count(nxt)) {
+
+                    int frontier = 0;
+
+                    for (auto direction :
+                        unswbc::Direction::get_direction_list()) {
+
+                        if (Memory::known_edge_type(nxt, direction) ==
+                            unswbc::EdgeType::KELP) {
+                            continue;
+                        }
+
+                        unswbc::Position beyond =
+                            nxt.add_dir(direction);
+
+                        if (Memory::known_occupied(beyond))
+                            continue;
+
+                        // Strong signal: this tile borders genuinely
+                        // unseen territory.
+                        if (!tile_ever_seen(beyond)) {
+                            frontier += 10;
+                        }
+                        // Weaker signal: this tile borders territory
+                        // we still haven't physically visited.
+                        else if (!State::EXPLORATION_VISITED.count(beyond)) {
+                            frontier += 1;
+                        }
+                    }
+
+                    /*
+                    * Prefer:
+                    * 1. Stronger frontier
+                    * 2. Shorter distance
+                    */
+                    if (frontier > best_local_frontier ||
+                        (frontier == best_local_frontier &&
+                        next_distance < best_local_distance)) {
+
+                        best_local_target = nxt;
+                        best_local_frontier = frontier;
+                        best_local_distance = next_distance;
+                    }
+                }
+
+                /*
+                * We can continue searching through known territory.
+                * This means the local search can find a visible exit
+                * even if there are already-visited tiles between us
+                * and it.
+                */
+                if (tile_ever_seen(nxt)) {
+                    local_queue.push_back({
+                        nxt,
+                        next_distance
+                    });
+                }
+            }
+        }
+
+        /*
+        * If we found a nearby visible-but-unvisited frontier,
+        * use it immediately.
+        */
+        if (best_local_target.has_value())
+            return best_local_target;
+
+        /*
+        * Second pass:
+        * No useful visible frontier nearby, so search more broadly
+        * for genuinely unseen territory.
+        */
+        std::deque<Node> queue;
 
         std::unordered_set<
             unswbc::Position,
             unswbc::PositionHash
         > seen;
 
-        queue.push_back(start);
+        queue.push_back({start, 0});
         seen.insert(start);
 
         int expanded = 0;
 
-        while (
-            !queue.empty() &&
-            expanded < State::UNEXPLORED_BFS_CAP
-        ) {
-            unswbc::Position pos =
-                queue.front();
+        while (!queue.empty() &&
+            expanded < State::UNEXPLORED_BFS_CAP) {
 
+            Node current = queue.front();
             queue.pop_front();
-            expanded++;
 
-            for (auto neighbour :
-                get_neighbors(
-                    pos,
-                    round_num
-                )) {
+            ++expanded;
 
-                unswbc::Position nxt =
-                    neighbour.position;
+            for (const auto& neighbour :
+                get_neighbors(current.pos, round_num)) {
 
-                // Already considered in this search.
+                unswbc::Position nxt = neighbour.position;
+
                 if (seen.count(nxt))
-                    continue;
-
-                // ----------------------------------------------------
-                // PERMANENT EXPLORATION MEMORY
-                //
-                // Never intentionally travel back through a tile
-                // the dragon has already visited.
-                // ----------------------------------------------------
-
-                if (State::EXPLORATION_VISITED.count(nxt))
                     continue;
 
                 seen.insert(nxt);
@@ -610,20 +725,27 @@ namespace Search {
                 if (Memory::known_occupied(nxt))
                     continue;
 
-                // ----------------------------------------------------
-                // FRONTIER
-                //
-                // We have reached the edge of our known map without
-                // physically exploring this position yet.
-                // ----------------------------------------------------
+                /*
+                * Never select territory we have already physically
+                * explored.
+                */
+                if (State::EXPLORATION_VISITED.count(nxt))
+                    continue;
 
-                if (!tile_ever_seen(nxt)) {
+                /*
+                * Completely unseen tile.
+                */
+                if (!tile_ever_seen(nxt))
                     return nxt;
-                }
 
-                // Known tile that we have never physically visited.
-                // Continue exploring through it.
-                queue.push_back(nxt);
+                /*
+                * We know this tile, so it is safe to search through it
+                * to reach other unexplored territory.
+                */
+                queue.push_back({
+                    nxt,
+                    current.distance + neighbour.cost
+                });
             }
         }
 

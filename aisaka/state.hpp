@@ -16,10 +16,10 @@ namespace State {
     inline bool SONAR3 = false;
     inline bool AGGRESSIVE = true;
 
-    inline const int BFS_CAP = 1000;
+    inline const int BFS_CAP = 1500;
     inline const int UNEXPLORED_BFS_CAP = 1000;
-    inline const double TURN_TIME_BUDGET = 0.5;
-    inline const int BFS_DEADLINE_CHECK_EVERY = 4;
+    inline const double TURN_TIME_BUDGET = 0.9;
+    inline const int BFS_DEADLINE_CHECK_EVERY = 10;
 
     inline std::unordered_set<
         unswbc::Position,
