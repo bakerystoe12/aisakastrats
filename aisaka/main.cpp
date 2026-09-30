@@ -79,7 +79,7 @@ void execute_turn() {
         }
     }
 
-    if (round_num > 400){
+    if (round_num > 350){
         Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 0;
     }
 
@@ -111,6 +111,10 @@ int main() {
             State::AGGRESSIVE = stable_roll(unswbc::ct->get_id(), aggro_chance);
             rolled = true;
             if (round_num < 250) State::AGGRESSIVE = true;
+        }
+        
+        if (round_num > 400 && unswbc::ct->get_length() > 6){
+            State::AGGRESSIVE = false;
         }
 
         execute_turn();
