@@ -1706,3 +1706,4 @@ std::optional<unswbc::Direction> choose_direction(
     }
     return best_d;
 }
+}
