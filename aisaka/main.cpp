@@ -68,7 +68,7 @@ void execute_turn() {
     if (Kamikaze::kamikaze_charge(others, deadline)) return;
     if (Kamikaze::kamikaze_dodge_split(others)) return;
 
-    if (round_num > 400 && !Decision::enemy_nearby(others) && round_num < 490) {
+    if (round_num > 425 && !Decision::enemy_nearby(others) && round_num < 490) {
         if (Decision::seppuku_conditions(others)) {
             Decision::suicide_bot();
             return;
@@ -103,10 +103,6 @@ int main() {
             State::AGGRESSIVE = stable_roll(unswbc::ct->get_id(), aggro_chance);
             rolled = true;
             if (round_num < 250) State::AGGRESSIVE = true;
-        }
-
-        if (unswbc::ct->get_length() > 5 && round_num > 1) {
-            State::AGGRESSIVE = false;
         }
 
         execute_turn();

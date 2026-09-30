@@ -575,7 +575,7 @@ namespace Search {
 
         while (
             !queue.empty() &&
-            expanded < State::BFS_CAP
+            expanded < State::UNEXPLORED_BFS_CAP
         ) {
             auto [pos, distance] = queue.front();
             queue.pop_front();
@@ -700,7 +700,7 @@ namespace Search {
 
         while (
             !queue.empty() &&
-            expanded < State::BFS_CAP
+            expanded < State::PEARL_BFS_CAP
         ) {
             auto pos = queue.front();
             queue.pop_front();

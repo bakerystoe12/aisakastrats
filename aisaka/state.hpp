@@ -16,11 +16,10 @@ namespace State {
     inline bool SONAR3 = false;
     inline bool AGGRESSIVE = true;
 
-    inline const int DEAD_REGION_MIN_TILES = 8;
-
-    inline const int BFS_CAP = 500;
-    inline const int UNEXPLORED_BFS_CAP = 500;
-    inline const double TURN_TIME_BUDGET = 0.1;
+    inline const int BFS_CAP = 1000;
+    inline const int PEARL_BFS_CAP = 100;
+    inline const int UNEXPLORED_BFS_CAP = 1000;
+    inline const double TURN_TIME_BUDGET = 0.5;
     inline const int BFS_DEADLINE_CHECK_EVERY = 4;
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 3;

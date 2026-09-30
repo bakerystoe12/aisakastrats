@@ -263,8 +263,9 @@ namespace Decision {
             }
         }
 
+
         if (!roomy.empty()) {
-            moves = roomy;
+                moves = roomy;
         } else {
             std::unordered_map<
                 unswbc::Direction,
@@ -279,12 +280,14 @@ namespace Decision {
                         needed,
                         *deadline
                     ) == best_space) {
+
                     best_moves.insert(kv);
                 }
             }
 
             moves = best_moves;
         }
+        
 
         // ------------------------------------------------------------
         // Pearl-memory exploration score

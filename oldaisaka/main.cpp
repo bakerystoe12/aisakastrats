@@ -105,10 +105,6 @@ int main() {
             if (round_num < 250) State::AGGRESSIVE = true;
         }
 
-        if (unswbc::ct->get_length() > 5 && round_num > 1) {
-            State::AGGRESSIVE = false;
-        }
-
         execute_turn();
         Memory::send_sonar_report();
         unswbc::end_turn();
