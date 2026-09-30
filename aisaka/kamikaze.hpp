@@ -160,7 +160,7 @@ namespace Kamikaze {
         if (State::AGGRESSIVE) return false;
         if (!kamikaze_threat(others)) return false;
         int child = std::max(2, unswbc::ct->get_length() - 2);
-        if (unswbc::ct->can_split(child) && Decision::split_is_safe(child, others, true)) {
+        if (unswbc::ct->can_split(child)) {
             unswbc::ct->do_split(child);
             return true;
         }

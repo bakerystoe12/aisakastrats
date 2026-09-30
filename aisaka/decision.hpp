@@ -94,7 +94,7 @@ namespace Decision {
     // BASIC SPLIT CHECKS
     // ------------------------------------------------------------------------
 
-    bool has_room_to_split() {
+    bool has_room_to_split() {  // never used remove at ones own discretion
         unswbc::Position here =
             unswbc::ct->get_position();
 
@@ -491,7 +491,6 @@ namespace Decision {
 
         if (length <
             2 * unswbc::Constants::MIN_SIZE) {
-
             return false;
         }
 
@@ -500,21 +499,11 @@ namespace Decision {
             length - unswbc::Constants::MIN_SIZE
         );
 
-        if (!unswbc::ct->can_split(child))
-            return false;
-
-        // Emergency mode relaxes the safety requirements.
-        if (!split_is_safe(
-                child,
-                others,
-                true
-            )) {
-            return false;
+        if (unswbc::ct->can_split(child)){
+            unswbc::ct->do_split(child);
+            return true;
         }
-
-        unswbc::ct->do_split(child);
-
-        return true;
+        return false;
     }
 
     // ------------------------------------------------------------------------
@@ -571,7 +560,6 @@ namespace Decision {
                 }
             }
         }
-
         return unswbc::ct->get_dir();
     }
 
@@ -588,6 +576,15 @@ namespace Decision {
 
             return false;
         }
+        bool tail_known =
+            State::OWN_BODY.size() >= static_cast<size_t>(unswbc::ct->get_length());
+
+        if (!tail_known) {
+            if (unswbc::ct->can_split(2)) {
+                unswbc::ct->do_split(2);
+                return true;
+            }
+        }
 
         // Don't split while too many allies are nearby.
         if (nearby_ally_count(others) >
@@ -596,16 +593,10 @@ namespace Decision {
             return false;
         }
 
-        // Require enough room first.
-        if (!has_room_to_split())
-            return false;
 
         int length =
             unswbc::ct->get_length();
 
-        // ------------------------------------------------------------
-        // Keep your friend's child-size rule.
-        // ------------------------------------------------------------
 
         int child = 2;
 
@@ -803,8 +794,29 @@ namespace Decision {
 
         if (moves.empty() &&
             unknown_portals.empty()) {
-
             return std::nullopt;
+        }
+        if (moves.empty()) {
+            // Only unresolved portals available - take the least dangerous one,
+            // same selection logic already used lower down for the "targets
+            // empty" case, just reachable here instead of only after scoring.
+            unswbc::Direction portal_choice = *unknown_portals.begin();
+            double best_portal_danger = 1e9;
+            for (auto [portal_dir, portal_id] : portal_options) {
+                if (!unknown_portals.count(portal_dir)) continue;
+                unswbc::Position entrance = here.add_dir(portal_dir);
+                double d = danger(entrance, others);
+                if (d < best_portal_danger) {
+                    best_portal_danger = d;
+                    portal_choice = portal_dir;
+                }
+            }
+            for (auto [portal_dir, portal_id] : portal_options) {
+                if (portal_dir == portal_choice) {
+                    Memory::remember_portal_crossing(portal_id, round_num);
+                    return portal_dir;
+                }
+            }
         }
 
         std::unordered_set<
