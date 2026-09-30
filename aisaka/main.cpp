@@ -85,7 +85,7 @@ void execute_turn() {
 
     auto opt_d = Decision::choose_direction(others, round_num, tiles, &deadline);
     if (!opt_d.has_value()) {
-        auto fallback = Decision::last_resort(round_num);
+        auto fallback = Decision::last_resort(round_num, others);
         if (fallback.has_value()) {
             unswbc::ct->make_move(fallback.value());
         }
