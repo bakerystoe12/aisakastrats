@@ -556,6 +556,57 @@ namespace Search {
         return dist_to;
     }
 
+    std::optional<unswbc::Position> nearest_unexplored(
+        unswbc::Position start,
+        int round_num
+    ) {
+        std::deque<std::pair<unswbc::Position, int>> queue;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > seen;
+
+        queue.push_back({start, 0});
+        seen.insert(start);
+
+        int expanded = 0;
+
+        while (
+            !queue.empty() &&
+            expanded < State::UNEXPLORED_BFS_CAP
+        ) {
+            auto [pos, distance] = queue.front();
+            queue.pop_front();
+
+            expanded++;
+
+            for (auto neighbour : get_neighbors(pos, round_num)) {
+                unswbc::Position nxt = neighbour.position;
+
+                if (seen.count(nxt)) {
+                    continue;
+                }
+
+                seen.insert(nxt);
+
+                if (Memory::known_occupied(nxt)) {
+                    continue;
+                }
+
+                if (State::KNOWN_EDGES.count(nxt) == 0) {
+                    return nxt;
+                }
+
+                queue.push_back({
+                    nxt,
+                    distance + 1
+                });
+            }
+        }
+
+        return std::nullopt;
+    }
 
     int unexplored_score(
         unswbc::Position start

@@ -161,6 +161,22 @@ namespace Decision {
             targets = cluster;
         }
 
+        std::optional<unswbc::Position> frontier_target;
+
+        if (targets.empty()) {
+            frontier_target = Search::nearest_unexplored(
+                here,
+                round_num
+            );
+
+            if (frontier_target.has_value()) {
+                targets.push_back({
+                    frontier_target.value(),
+                    0
+                });
+            }
+        }
+
         std::vector<unswbc::Position> target_positions;
 
         for (auto& t : targets) {
