@@ -38,8 +38,10 @@ namespace State {
     inline std::unordered_set<unswbc::Position, unswbc::PositionHash> PEARL_CAPABLE;
 
     inline std::unordered_set<uint64_t> KELP_EDGES;
-    inline std::vector<uint64_t> KELP_LIST;
-    inline int KELP_SEND_CURSOR = 0;
+
+    inline std::vector<uint64_t> PORTAL_LIST;
+    inline int PORTAL_SEND_CURSOR = 0;
+
 
     struct Teammate { bool aggressive; int length; int round; };
     inline std::unordered_map<int, Teammate> TEAMMATES;

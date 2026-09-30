@@ -79,6 +79,10 @@ void execute_turn() {
         }
     }
 
+    if (round_num > 400){
+        Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 1;
+    }
+
     auto opt_d = Decision::choose_direction(others, round_num, tiles, &deadline);
     if (!opt_d.has_value()) {
         auto fallback = Decision::last_resort(round_num);

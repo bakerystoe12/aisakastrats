@@ -12,7 +12,7 @@
 // KAMIKAZE
 // ============================================================================
 namespace Kamikaze {
-    const double KAMIKAZE_MIN_LENGTH_RATIO = 1.1;
+    double KAMIKAZE_MIN_LENGTH_RATIO = 1.1;
     const int KAMIKAZE_DODGE_CLOSE_RANGE = 2;
     const int KAMIKAZE_DODGE_SPRINT_RANGE = 3;
 
