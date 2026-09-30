@@ -1,1177 +1,1177 @@
-    #pragma once
+#pragma once
 
-    #include "helper.hpp"
+#include "helper.hpp"
 
-    #include <algorithm>
-    #include <chrono>
-    #include <cstdint>
-    #include <deque>
-    #include <optional>
-    #include <tuple>
-    #include <unordered_map>
-    #include <unordered_set>
-    #include <vector>
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <deque>
+#include <optional>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
-    // ============================================================================
-    // DECISION
-    // ============================================================================
+// ============================================================================
+// DECISION
+// ============================================================================
 
-    namespace Decision {
+namespace Decision {
 
-        void suicide_bot() {
-            unswbc::ct->make_move(
-                unswbc::ct->get_dir().get_opposite()
+    void suicide_bot() {
+        unswbc::ct->make_move(
+            unswbc::ct->get_dir().get_opposite()
+        );
+    }
+
+    bool enemy_nearby(
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        unswbc::Team my_team = unswbc::ct->get_team();
+
+        for (auto* p : others) {
+            if (p->get_team() != my_team)
+                return true;
+        }
+
+        return false;
+    }
+
+    double danger(
+        unswbc::Position pos,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        double total = 0.0;
+
+        for (auto* p : others) {
+            int d = Search::dist(
+                pos,
+                p->get_position()
             );
-        }
 
-        bool enemy_nearby(
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            unswbc::Team my_team = unswbc::ct->get_team();
-
-            for (auto* p : others) {
-                if (p->get_team() != my_team)
-                    return true;
-            }
-
-            return false;
-        }
-
-        double danger(
-            unswbc::Position pos,
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            double total = 0.0;
-
-            for (auto* p : others) {
-                int d = Search::dist(
-                    pos,
-                    p->get_position()
-                );
-
-                if (p->is_head()) {
-                    if (d <= 1)
-                        total += 2.0;
-                    else if (d == 2)
-                        total += 1.0;
-                    else if (d == 3)
-                        total += 0.5;
-                } else if (d <= 1) {
-                    total += 0.5;
-                }
-            }
-
-            return total;
-        }
-
-        double ally_crowding(
-            unswbc::Position pos,
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            unswbc::Team my_team = unswbc::ct->get_team();
-
-            double total = 0.0;
-
-            for (auto* p : others) {
-                if (p->get_team() != my_team)
-                    continue;
-
-                int d = Search::dist(
-                    pos,
-                    p->get_position()
-                );
-
+            if (p->is_head()) {
                 if (d <= 1)
                     total += 2.0;
                 else if (d == 2)
                     total += 1.0;
+                else if (d == 3)
+                    total += 0.5;
+            } else if (d <= 1) {
+                total += 0.5;
             }
-
-            return total;
         }
 
-        // ------------------------------------------------------------------------
-        // BASIC SPLIT CHECKS
-        // ------------------------------------------------------------------------
+        return total;
+    }
 
-        bool has_room_to_split() {
-            unswbc::Position here =
-                unswbc::ct->get_position();
+    double ally_crowding(
+        unswbc::Position pos,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        unswbc::Team my_team = unswbc::ct->get_team();
 
-            double needed =
-                unswbc::ct->get_length() *
-                State::SPLIT_ROOM_MULTIPLIER;
+        double total = 0.0;
 
-            return Search::split_room(
-                here,
-                here,
-                needed
-            ) >= needed;
-        }
+        for (auto* p : others) {
+            if (p->get_team() != my_team)
+                continue;
 
-        int nearby_ally_count(
-            const std::vector<unswbc::DragonPart*>& others,
-            int radius = 3
-        ) {
-            unswbc::Position here =
-                unswbc::ct->get_position();
-
-            unswbc::Team my_team =
-                unswbc::ct->get_team();
-
-            std::unordered_set<int> seen;
-
-            for (auto* p : others) {
-                if (p->get_team() != my_team)
-                    continue;
-
-                if (seen.count(p->get_id()))
-                    continue;
-
-                if (Search::dist(
-                        here,
-                        p->get_position()
-                    ) <= radius) {
-
-                    seen.insert(p->get_id());
-                }
-            }
-
-            return static_cast<int>(seen.size());
-        }
-
-        // ------------------------------------------------------------------------
-        // SPLIT FATE PREDICTION
-        //
-        // After splitting:
-        //   - the current head remains the parent head
-        //   - the current tail becomes the child head
-        //
-        // We predict whether BOTH resulting dragons have somewhere safe
-        // to move immediately, and whether they have a continuation.
-        // ------------------------------------------------------------------------
-
-        struct SplitFate {
-            bool safe = false;
-
-            int parent_options = 0;
-            int child_options = 0;
-
-            int parent_best = 0;
-            int child_best = 0;
-
-            int ally_conflicts = 0;
-        };
-
-        bool split_edge_open(
-            unswbc::Position pos,
-            unswbc::Direction d
-        ) {
-            return Memory::known_edge_type(
+            int d = Search::dist(
                 pos,
-                d
-            ) == unswbc::EdgeType::EMPTY;
+                p->get_position()
+            );
+
+            if (d <= 1)
+                total += 2.0;
+            else if (d == 2)
+                total += 1.0;
         }
 
-        bool split_position_blocked(
-            unswbc::Position pos,
-            const std::unordered_set<
-                unswbc::Position,
-                unswbc::PositionHash
-            >& blocked
-        ) {
-            return blocked.count(pos) != 0;
+        return total;
+    }
+
+    // ------------------------------------------------------------------------
+    // BASIC SPLIT CHECKS
+    // ------------------------------------------------------------------------
+
+    bool has_room_to_split() {
+        unswbc::Position here =
+            unswbc::ct->get_position();
+
+        double needed =
+            unswbc::ct->get_length() *
+            State::SPLIT_ROOM_MULTIPLIER;
+
+        return Search::split_room(
+            here,
+            here,
+            needed
+        ) >= needed;
+    }
+
+    int nearby_ally_count(
+        const std::vector<unswbc::DragonPart*>& others,
+        int radius = 3
+    ) {
+        unswbc::Position here =
+            unswbc::ct->get_position();
+
+        unswbc::Team my_team =
+            unswbc::ct->get_team();
+
+        std::unordered_set<int> seen;
+
+        for (auto* p : others) {
+            if (p->get_team() != my_team)
+                continue;
+
+            if (seen.count(p->get_id()))
+                continue;
+
+            if (Search::dist(
+                    here,
+                    p->get_position()
+                ) <= radius) {
+
+                seen.insert(p->get_id());
+            }
         }
 
-        int split_safe_followups(
-            unswbc::Position candidate,
-            unswbc::Position old_head,
-            const std::unordered_set<
-                unswbc::Position,
-                unswbc::PositionHash
-            >& blocked,
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            int safe = 0;
+        return static_cast<int>(seen.size());
+    }
 
-            unswbc::Team my_team =
-                unswbc::ct->get_team();
+    // ------------------------------------------------------------------------
+    // SPLIT FATE PREDICTION
+    //
+    // After splitting:
+    //   - the current head remains the parent head
+    //   - the current tail becomes the child head
+    //
+    // We predict whether BOTH resulting dragons have somewhere safe
+    // to move immediately, and whether they have a continuation.
+    // ------------------------------------------------------------------------
 
-            for (auto d :
-                unswbc::Direction::get_direction_list()) {
+    struct SplitFate {
+        bool safe = false;
 
-                if (!split_edge_open(candidate, d))
-                    continue;
+        int parent_options = 0;
+        int child_options = 0;
 
-                unswbc::Position next =
-                    candidate.add_dir(d);
+        int parent_best = 0;
+        int child_best = 0;
 
-                // The old head becomes body after moving.
-                if (next == old_head)
-                    continue;
+        int ally_conflicts = 0;
+    };
 
-                if (split_position_blocked(
-                        next,
-                        blocked
-                    )) {
-                    continue;
-                }
+    bool split_edge_open(
+        unswbc::Position pos,
+        unswbc::Direction d
+    ) {
+        return Memory::known_edge_type(
+            pos,
+            d
+        ) == unswbc::EdgeType::EMPTY;
+    }
 
-                bool enemy_head = false;
-                bool ally_head = false;
+    bool split_position_blocked(
+        unswbc::Position pos,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& blocked
+    ) {
+        return blocked.count(pos) != 0;
+    }
 
-                for (auto* p : others) {
-                    if (p->get_position() != next)
-                        continue;
+    int split_safe_followups(
+        unswbc::Position candidate,
+        unswbc::Position old_head,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& blocked,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        int safe = 0;
 
-                    if (p->get_team() == my_team) {
-                        if (p->is_head())
-                            ally_head = true;
-                    } else {
-                        if (p->is_head())
-                            enemy_head = true;
-                    }
-                }
+        unswbc::Team my_team =
+            unswbc::ct->get_team();
 
-                if (enemy_head)
-                    continue;
+        for (auto d :
+            unswbc::Direction::get_direction_list()) {
 
-                if (ally_head)
-                    continue;
+            if (!split_edge_open(candidate, d))
+                continue;
 
-                ++safe;
+            unswbc::Position next =
+                candidate.add_dir(d);
+
+            // The old head becomes body after moving.
+            if (next == old_head)
+                continue;
+
+            if (split_position_blocked(
+                    next,
+                    blocked
+                )) {
+                continue;
             }
 
-            return safe;
-        }
-
-        SplitFate predict_split_fate(
-            int child_size,
-            const std::vector<unswbc::DragonPart*>& others,
-            bool emergency = false
-        ) {
-            SplitFate fate;
-
-            const int length =
-                unswbc::ct->get_length();
-
-            const int parent_size =
-                length - child_size;
-
-            // Basic validity checks.
-            if (child_size < unswbc::Constants::MIN_SIZE ||
-                parent_size < unswbc::Constants::MIN_SIZE ||
-                !unswbc::ct->can_split(child_size) ||
-                State::OWN_BODY.size() <
-                    static_cast<size_t>(length)) {
-
-                return fate;
-            }
-
-            // ------------------------------------------------------------
-            // Block our complete current body.
-            // ------------------------------------------------------------
-
-            std::unordered_set<
-                unswbc::Position,
-                unswbc::PositionHash
-            > blocked;
-
-            for (const auto& p : State::OWN_BODY) {
-                blocked.insert(p);
-            }
-
-            // ------------------------------------------------------------
-            // Identify the two heads after the split.
-            //
-            // Assumption:
-            // OWN_BODY.front() = current head
-            // OWN_BODY.back()  = current tail
-            // ------------------------------------------------------------
-
-            unswbc::Position parent_head =
-                State::OWN_BODY.front();
-
-            unswbc::Position child_head =
-                State::OWN_BODY.back();
-
-            // ------------------------------------------------------------
-            // Block all visible dragons as occupied.
-            // ------------------------------------------------------------
+            bool enemy_head = false;
+            bool ally_head = false;
 
             for (auto* p : others) {
-                blocked.insert(
-                    p->get_position()
-                );
+                if (p->get_position() != next)
+                    continue;
+
+                if (p->get_team() == my_team) {
+                    if (p->is_head())
+                        ally_head = true;
+                } else {
+                    if (p->is_head())
+                        enemy_head = true;
+                }
             }
 
-            // ------------------------------------------------------------
-            // Each resulting dragon treats the OTHER split head as blocked.
-            // ------------------------------------------------------------
+            if (enemy_head)
+                continue;
 
-            std::unordered_set<
-                unswbc::Position,
-                unswbc::PositionHash
-            > parent_blocked = blocked;
+            if (ally_head)
+                continue;
 
-            std::unordered_set<
-                unswbc::Position,
-                unswbc::PositionHash
-            > child_blocked = blocked;
+            ++safe;
+        }
 
-            parent_blocked.insert(child_head);
-            child_blocked.insert(parent_head);
+        return safe;
+    }
 
-            // ------------------------------------------------------------
-            // Evaluate one resulting head.
-            // ------------------------------------------------------------
+    SplitFate predict_split_fate(
+        int child_size,
+        const std::vector<unswbc::DragonPart*>& others,
+        bool emergency = false
+    ) {
+        SplitFate fate;
 
-            auto evaluate_head =
-                [&](unswbc::Position head,
-                    const std::unordered_set<
-                        unswbc::Position,
-                        unswbc::PositionHash
-                    >& local_blocked,
-                    int& option_count,
-                    int& best_followups) {
+        const int length =
+            unswbc::ct->get_length();
 
-                    int best = 0;
+        const int parent_size =
+            length - child_size;
 
-                    for (auto d :
-                        unswbc::Direction::get_direction_list()) {
-
-                        if (!split_edge_open(head, d))
-                            continue;
-
-                        unswbc::Position next =
-                            head.add_dir(d);
-
-                        if (split_position_blocked(
-                                next,
-                                local_blocked
-                            )) {
-                            continue;
-                        }
-
-                        bool enemy_near = false;
-                        bool ally_conflict = false;
-
-                        for (auto* p : others) {
-
-                            int dist =
-                                Search::dist(
-                                    next,
-                                    p->get_position()
-                                );
-
-                            if (p->get_team() ==
-                                unswbc::ct->get_team()) {
-
-                                if (p->is_head() &&
-                                    dist <= 1) {
-
-                                    ally_conflict = true;
-                                }
-
-                            } else {
-
-                                if (p->is_head() &&
-                                    dist <= 1) {
-
-                                    enemy_near = true;
-                                }
-                            }
-                        }
-
-                        // Normal splits should not immediately
-                        // create enemy-head danger.
-                        if (!emergency && enemy_near)
-                            continue;
-
-                        int followups =
-                            split_safe_followups(
-                                next,
-                                head,
-                                local_blocked,
-                                others
-                            );
-
-                        // A normal split should not create
-                        // a one-turn dead end.
-                        if (!emergency &&
-                            followups == 0) {
-
-                            continue;
-                        }
-
-                        if (ally_conflict) {
-                            ++fate.ally_conflicts;
-                        }
-
-                        ++option_count;
-
-                        best = std::max(
-                            best,
-                            followups
-                        );
-                    }
-
-                    best_followups = best;
-                };
-
-            // Evaluate parent.
-            evaluate_head(
-                parent_head,
-                parent_blocked,
-                fate.parent_options,
-                fate.parent_best
-            );
-
-            // Evaluate child.
-            evaluate_head(
-                child_head,
-                child_blocked,
-                fate.child_options,
-                fate.child_best
-            );
-
-            // ------------------------------------------------------------
-            // Decide whether the split is safe.
-            //
-            // Normal:
-            //   both dragons need a first move
-            //   AND a continuation.
-            //
-            // Emergency:
-            //   both dragons only need a first move.
-            // ------------------------------------------------------------
-
-            const int min_options = 1;
-            const int min_followups =
-                emergency ? 0 : 1;
-
-            fate.safe =
-                fate.parent_options >= min_options &&
-                fate.child_options >= min_options &&
-                fate.parent_best >= min_followups &&
-                fate.child_best >= min_followups;
-
-            // Multiple immediate ally conflicts make
-            // a normal split unsafe.
-            if (!emergency &&
-                fate.ally_conflicts >= 2) {
-
-                fate.safe = false;
-            }
+        // Basic validity checks.
+        if (child_size < unswbc::Constants::MIN_SIZE ||
+            parent_size < unswbc::Constants::MIN_SIZE ||
+            !unswbc::ct->can_split(child_size) ||
+            State::OWN_BODY.size() <
+                static_cast<size_t>(length)) {
 
             return fate;
         }
 
-        bool split_is_safe(
-            int child_size,
-            const std::vector<unswbc::DragonPart*>& others,
-            bool emergency = false
-        ) {
-            return predict_split_fate(
-                child_size,
-                others,
-                emergency
-            ).safe;
+        // ------------------------------------------------------------
+        // Block our complete current body.
+        // ------------------------------------------------------------
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > blocked;
+
+        for (const auto& p : State::OWN_BODY) {
+            blocked.insert(p);
         }
 
-        // ------------------------------------------------------------------------
-        // EMERGENCY SPLIT
-        // ------------------------------------------------------------------------
-
-        bool desperate_split(
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            int length =
-                unswbc::ct->get_length();
-
-            if (length <
-                2 * unswbc::Constants::MIN_SIZE) {
-
-                return false;
-            }
-
-            int child = std::max(
-                unswbc::Constants::MIN_SIZE,
-                length - unswbc::Constants::MIN_SIZE
-            );
-
-            if (!unswbc::ct->can_split(child))
-                return false;
-
-            // Emergency mode relaxes the safety requirements.
-            if (!split_is_safe(
-                    child,
-                    others,
-                    true
-                )) {
-                return false;
-            }
-
-            unswbc::ct->do_split(child);
-
-            return true;
-        }
-
-        // ------------------------------------------------------------------------
-        // LAST RESORT
-        // ------------------------------------------------------------------------
-
-        std::optional<unswbc::Direction> last_resort(
-            int round_num,
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            unswbc::Position here =
-                unswbc::ct->get_position();
-
-            auto portals =
-                Search::portal_directions(
-                    here,
-                    round_num
-                );
-
-            if (!portals.empty()) {
-                Memory::remember_portal_crossing(
-                    portals[0].second,
-                    round_num
-                );
-
-                return portals[0].first;
-            }
-
-            if (desperate_split(others))
-                return std::nullopt;
-
-            for (auto d :
-                unswbc::Direction::get_direction_list()) {
-
-                unswbc::Position nxt =
-                    here.add_dir(d);
-
-                auto* tile =
-                    unswbc::ct->get_tile(nxt);
-
-                if (tile) {
-
-                    auto* dragon =
-                        tile->get_dragon();
-
-                    if (dragon != nullptr &&
-                        dragon->get_team() ==
-                            unswbc::ct->get_team() &&
-                        dragon->is_head()) {
-
-                        suicide_bot();
-
-                        return std::nullopt;
-                    }
-                }
-            }
-
-            return unswbc::ct->get_dir();
-        }
-
-        // ------------------------------------------------------------------------
-        // NORMAL SPLIT
-        // ------------------------------------------------------------------------
-
-        bool try_split(
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            if (!State::AGGRESSIVE ||
-                unswbc::ct->get_length() <
-                    State::SPLIT_MIN_LENGTH) {
-
-                return false;
-            }
-
-            // Don't split while too many allies are nearby.
-            if (nearby_ally_count(others) >
-                State::MAX_NEARBY_ALLIES_TO_SPLIT) {
-
-                return false;
-            }
-
-            // Require enough room first.
-            if (!has_room_to_split())
-                return false;
-
-            int length =
-                unswbc::ct->get_length();
-
-            // ------------------------------------------------------------
-            // Keep your friend's child-size rule.
-            // ------------------------------------------------------------
-
-            int child = 2;
-
-            if (length % 2 == 0) {
-
-                if ((length / 2) % 2 != 0) {
-                    child = 2;
-                } else {
-                    child = length / 2;
-                }
-
-            } else {
-                child = 2;
-            }
-
-            // ------------------------------------------------------------
-            // NEW:
-            // Predict whether BOTH resulting dragons are safe.
-            // ------------------------------------------------------------
-
-            if (!unswbc::ct->can_split(child))
-                return false;
-
-            if (!split_is_safe(
-                    child,
-                    others
-                )) {
-                return false;
-            }
-
-            unswbc::ct->do_split(child);
-
-            return true;
-        }
-
-        // ------------------------------------------------------------------------
-        // SEPPUKU / TEAMMATE SIZE CHECK
-        // ------------------------------------------------------------------------
-
-        bool seppuku_conditions(
-            const std::vector<unswbc::DragonPart*>& others
-        ) {
-            int max_length = 0;
-            int max_visible = 0;
-
-            for (const auto& kv : State::TEAMMATES) {
-                max_length = std::max(
-                    max_length,
-                    kv.second.length
-                );
-            }
-
-            bool ally_found = false;
-
-            unswbc::Team my_team =
-                unswbc::ct->get_team();
-
-            for (auto* p : others) {
-
-                if (p->get_team() == my_team &&
-                    p->is_head()) {
-
-                    ally_found = true;
-
-                    int masked =
-                        p->get_id() & Memory::ID_MASK;
-
-                    if (State::TEAMMATES.count(masked)) {
-
-                        max_visible = std::max(
-                            max_visible,
-                            State::TEAMMATES[masked].length
-                        );
-                    }
-                }
-            }
-
-            double max_avg =
-                (max_length +
-                max_visible +
-                max_visible) / 3.0;
-
-            if (unswbc::ct->get_length() <
-                max_visible) {
-
-                return ally_found;
-            }
-
-            if (unswbc::ct->get_length() <
-                max_avg * 0.8) {
-
-                return ally_found;
-            }
-
-            return false;
-        }
-
-        // ========================================================================
-        // CHOOSE DIRECTION
+        // ------------------------------------------------------------
+        // Identify the two heads after the split.
         //
-        // Your existing choose_direction() is kept unchanged.
-        // ========================================================================
+        // Assumption:
+        // OWN_BODY.front() = current head
+        // OWN_BODY.back()  = current tail
+        // ------------------------------------------------------------
 
-        std::optional<unswbc::Direction> choose_direction(
-            const std::vector<unswbc::DragonPart*>& others,
-            int round_num,
-            const std::vector<unswbc::Tile>& tiles,
-            double* deadline
-        ) {
-            unswbc::Position here =
-                unswbc::ct->get_position();
+        unswbc::Position parent_head =
+            State::OWN_BODY.front();
 
-            auto targets =
-                Search::gather_pearl_targets(
-                    here,
-                    tiles
-                );
+        unswbc::Position child_head =
+            State::OWN_BODY.back();
 
-            auto cluster =
-                Search::find_pearl_cluster(targets);
+        // ------------------------------------------------------------
+        // Block all visible dragons as occupied.
+        // ------------------------------------------------------------
 
-            if (!cluster.empty()) {
-                targets = cluster;
-            }
+        for (auto* p : others) {
+            blocked.insert(
+                p->get_position()
+            );
+        }
 
-            std::optional<unswbc::Position> frontier_target;
+        // ------------------------------------------------------------
+        // Each resulting dragon treats the OTHER split head as blocked.
+        // ------------------------------------------------------------
 
-            if (targets.empty()) {
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > parent_blocked = blocked;
 
-                frontier_target =
-                    Search::nearest_unexplored(
-                        here,
-                        round_num
-                    );
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > child_blocked = blocked;
 
-                if (frontier_target.has_value()) {
+        parent_blocked.insert(child_head);
+        child_blocked.insert(parent_head);
 
-                    targets.push_back({
-                        frontier_target.value(),
-                        0
-                    });
-                }
-            }
+        // ------------------------------------------------------------
+        // Evaluate one resulting head.
+        // ------------------------------------------------------------
 
-            std::vector<unswbc::Position> target_positions;
-
-            for (auto& t : targets) {
-                target_positions.push_back(t.first);
-            }
-
-            std::unordered_map<
-                unswbc::Direction,
-                unswbc::Position,
-                DirectionHash
-            > moves;
-
-            for (auto d :
-                unswbc::Direction::get_direction_list()) {
-
-                auto nxt =
-                    Search::open_step(here, d);
-
-                if (nxt) {
-                    moves[d] = *nxt;
-                }
-            }
-
-            auto portal_options =
-                Search::portal_directions(
-                    here,
-                    round_num
-                );
-
-            std::unordered_set<
-                unswbc::Direction,
-                DirectionHash
-            > unknown_portals;
-
-            for (auto [d, pid] : portal_options) {
-
-                unswbc::Position destination;
-
-                if (Search::get_portal_destination(
-                        here,
-                        d,
-                        destination
-                    )) {
-
-                    moves[d] = destination;
-
-                } else {
-                    unknown_portals.insert(d);
-                }
-            }
-
-            if (moves.empty() &&
-                unknown_portals.empty()) {
-
-                return std::nullopt;
-            }
-
-            std::unordered_set<
-                unswbc::Position,
-                unswbc::PositionHash
-            > fatal_zone;
-
-            if (!State::AGGRESSIVE) {
-
-                fatal_zone =
-                    Search::build_fatal_zone(others);
-
-                std::unordered_map<
-                    unswbc::Direction,
+        auto evaluate_head =
+            [&](unswbc::Position head,
+                const std::unordered_set<
                     unswbc::Position,
-                    DirectionHash
-                > safe_moves;
+                    unswbc::PositionHash
+                >& local_blocked,
+                int& option_count,
+                int& best_followups) {
 
-                for (auto& kv : moves) {
+                int best = 0;
 
-                    if (!Search::is_fatal(
-                            kv.second,
-                            fatal_zone
+                for (auto d :
+                    unswbc::Direction::get_direction_list()) {
+
+                    if (!split_edge_open(head, d))
+                        continue;
+
+                    unswbc::Position next =
+                        head.add_dir(d);
+
+                    if (split_position_blocked(
+                            next,
+                            local_blocked
                         )) {
-
-                        safe_moves.insert(kv);
+                        continue;
                     }
-                }
 
-                if (!safe_moves.empty()) {
-                    moves = safe_moves;
-                }
-            }
+                    bool enemy_near = false;
+                    bool ally_conflict = false;
 
-            int needed =
-                State::AGGRESSIVE
-                    ? unswbc::ct->get_length()
-                    : unswbc::ct->get_length() + 1;
+                    for (auto* p : others) {
 
-            std::unordered_map<
-                unswbc::Direction,
-                unswbc::Position,
-                DirectionHash
-            > roomy;
-
-            int best_space = -1;
-
-            for (auto& kv : moves) {
-
-                int sp =
-                    Search::room(
-                        kv.second,
-                        here,
-                        needed,
-                        *deadline
-                    );
-
-                best_space =
-                    std::max(
-                        best_space,
-                        sp
-                    );
-
-                if (sp >= needed) {
-                    roomy.insert(kv);
-                }
-            }
-
-            if (!roomy.empty()) {
-                moves = roomy;
-
-            } else {
-
-                std::unordered_map<
-                    unswbc::Direction,
-                    unswbc::Position,
-                    DirectionHash
-                > best_moves;
-
-                for (auto& kv : moves) {
-
-                    if (Search::room(
-                            kv.second,
-                            here,
-                            needed,
-                            *deadline
-                        ) == best_space) {
-
-                        best_moves.insert(kv);
-                    }
-                }
-
-                moves = best_moves;
-            }
-
-            unswbc::Direction facing =
-                unswbc::ct->get_dir();
-
-            double now =
-                std::chrono::duration<double>(
-                    std::chrono::steady_clock::now()
-                        .time_since_epoch()
-                ).count();
-
-            // ------------------------------------------------------------
-            // Time-pressure fallback
-            // ------------------------------------------------------------
-
-            if (now >= *deadline) {
-
-                unswbc::Direction best_d =
-                    moves.begin()->first;
-
-                auto score =
-                    [&](unswbc::Direction d) {
-
-                        if (targets.empty()) {
-
-                            return std::make_tuple(
-                                0,
-                                Search::pearl_dist(
-                                    moves[d],
-                                    targets
-                                ),
-                                danger(
-                                    moves[d],
-                                    others
-                                ),
-                                direction_to_index(d)
+                        int dist =
+                            Search::dist(
+                                next,
+                                p->get_position()
                             );
+
+                        if (p->get_team() ==
+                            unswbc::ct->get_team()) {
+
+                            if (p->is_head() &&
+                                dist <= 1) {
+
+                                ally_conflict = true;
+                            }
 
                         } else {
 
-                            return std::make_tuple(
-                                Search::pearl_dist(
-                                    moves[d],
-                                    targets
-                                ),
-                                static_cast<int>(
-                                    d !=
-                                    unswbc::ct->get_dir()
-                                ),
-                                danger(
-                                    moves[d],
-                                    others
-                                ),
-                                direction_to_index(d)
-                            );
+                            if (p->is_head() &&
+                                dist <= 1) {
+
+                                enemy_near = true;
+                            }
                         }
-                    };
-
-                auto best_s =
-                    score(best_d);
-
-                for (auto& kv : moves) {
-
-                    auto s =
-                        score(kv.first);
-
-                    if (s < best_s) {
-                        best_s = s;
-                        best_d = kv.first;
                     }
-                }
 
-                return best_d;
-            }
+                    // Normal splits should not immediately
+                    // create enemy-head danger.
+                    if (!emergency && enemy_near)
+                        continue;
 
-            // ------------------------------------------------------------
-            // Normal decision-making
-            // ------------------------------------------------------------
+                    int followups =
+                        split_safe_followups(
+                            next,
+                            head,
+                            local_blocked,
+                            others
+                        );
 
-            unswbc::Direction best_d =
-                moves.begin()->first;
-
-            if (State::AGGRESSIVE) {
-
-                auto score =
-                    [&](unswbc::Direction d) {
-
-                        if (targets.empty()) {
-
-                            return std::make_tuple(
-                                0,
-                                0,
-                                d != facing,
-                                direction_to_index(d)
-                            );
-
-                        } else {
-
-                            return std::make_tuple(
-                                Search::pearl_dist_astar(
-                                    moves[d],
-                                    targets,
-                                    fatal_zone,
-                                    *deadline,
-                                    false,
-                                    target_positions
-                                ),
-                                0,
-                                d != facing,
-                                direction_to_index(d)
-                            );
-                        }
-                    };
-
-                auto best_s =
-                    score(best_d);
-
-                for (auto& kv : moves) {
-
-                    auto s =
-                        score(kv.first);
-
-                    if (s < best_s) {
-                        best_s = s;
-                        best_d = kv.first;
-                    }
-                }
-
-            } else {
-
-                auto score =
-                    [&](unswbc::Direction d) {
-
-                        if (targets.empty()) {
-
-                            return std::make_tuple(
-                                danger(
-                                    moves[d],
-                                    others
-                                ),
-                                0,
-                                0,
-                                d != facing,
-                                direction_to_index(d)
-                            );
-
-                        } else {
-
-                            return std::make_tuple(
-                                danger(
-                                    moves[d],
-                                    others
-                                ),
-                                0,
-                                Search::pearl_dist_astar(
-                                    moves[d],
-                                    targets,
-                                    fatal_zone,
-                                    *deadline,
-                                    true,
-                                    target_positions
-                                ),
-                                d != facing,
-                                direction_to_index(d)
-                            );
-                        }
-                    };
-
-                auto best_s =
-                    score(best_d);
-
-                for (auto& kv : moves) {
-
-                    auto s =
-                        score(kv.first);
-
-                    if (s < best_s) {
-                        best_s = s;
-                        best_d = kv.first;
-                    }
-                }
-            }
-
-            if (targets.empty() &&
-                !unknown_portals.empty()) {
-
-                unswbc::Direction portal_choice =
-                    *unknown_portals.begin();
-
-                double best_portal_danger =
-                    1e9;
-
-                int best_portal_facing = 2;
-                int best_portal_index = 100;
-
-                for (auto [portal_dir, portal_id] :
-                    portal_options) {
-
-                    if (!unknown_portals.count(
-                            portal_dir
-                        )) {
+                    // A normal split should not create
+                    // a one-turn dead end.
+                    if (!emergency &&
+                        followups == 0) {
 
                         continue;
                     }
 
-                    unswbc::Position entrance =
-                        here.add_dir(portal_dir);
-
-                    double portal_danger =
-                        danger(
-                            entrance,
-                            others
-                        );
-
-                    int facing_penalty =
-                        portal_dir != facing;
-
-                    int dir_index =
-                        direction_to_index(
-                            portal_dir
-                        );
-
-                    if (
-                        portal_danger <
-                            best_portal_danger ||
-
-                        (
-                            portal_danger ==
-                                best_portal_danger &&
-                            facing_penalty <
-                                best_portal_facing
-                        ) ||
-
-                        (
-                            portal_danger ==
-                                best_portal_danger &&
-                            facing_penalty ==
-                                best_portal_facing &&
-                            dir_index <
-                                best_portal_index
-                        )
-                    ) {
-
-                        portal_choice =
-                            portal_dir;
-
-                        best_portal_danger =
-                            portal_danger;
-
-                        best_portal_facing =
-                            facing_penalty;
-
-                        best_portal_index =
-                            dir_index;
+                    if (ally_conflict) {
+                        ++fate.ally_conflicts;
                     }
+
+                    ++option_count;
+
+                    best = std::max(
+                        best,
+                        followups
+                    );
                 }
 
-                for (auto [portal_dir, portal_id] :
-                    portal_options) {
+                best_followups = best;
+            };
 
-                    if (portal_dir ==
-                        portal_choice) {
+        // Evaluate parent.
+        evaluate_head(
+            parent_head,
+            parent_blocked,
+            fate.parent_options,
+            fate.parent_best
+        );
 
-                        Memory::remember_portal_crossing(
-                            portal_id,
-                            round_num
+        // Evaluate child.
+        evaluate_head(
+            child_head,
+            child_blocked,
+            fate.child_options,
+            fate.child_best
+        );
+
+        // ------------------------------------------------------------
+        // Decide whether the split is safe.
+        //
+        // Normal:
+        //   both dragons need a first move
+        //   AND a continuation.
+        //
+        // Emergency:
+        //   both dragons only need a first move.
+        // ------------------------------------------------------------
+
+        const int min_options = 1;
+        const int min_followups =
+            emergency ? 0 : 1;
+
+        fate.safe =
+            fate.parent_options >= min_options &&
+            fate.child_options >= min_options &&
+            fate.parent_best >= min_followups &&
+            fate.child_best >= min_followups;
+
+        // Multiple immediate ally conflicts make
+        // a normal split unsafe.
+        if (!emergency &&
+            fate.ally_conflicts >= 2) {
+
+            fate.safe = false;
+        }
+
+        return fate;
+    }
+
+    bool split_is_safe(
+        int child_size,
+        const std::vector<unswbc::DragonPart*>& others,
+        bool emergency = false
+    ) {
+        return predict_split_fate(
+            child_size,
+            others,
+            emergency
+        ).safe;
+    }
+
+    // ------------------------------------------------------------------------
+    // EMERGENCY SPLIT
+    // ------------------------------------------------------------------------
+
+    bool desperate_split(
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        int length =
+            unswbc::ct->get_length();
+
+        if (length <
+            2 * unswbc::Constants::MIN_SIZE) {
+
+            return false;
+        }
+
+        int child = std::max(
+            unswbc::Constants::MIN_SIZE,
+            length - unswbc::Constants::MIN_SIZE
+        );
+
+        if (!unswbc::ct->can_split(child))
+            return false;
+
+        // Emergency mode relaxes the safety requirements.
+        if (!split_is_safe(
+                child,
+                others,
+                true
+            )) {
+            return false;
+        }
+
+        unswbc::ct->do_split(child);
+
+        return true;
+    }
+
+    // ------------------------------------------------------------------------
+    // LAST RESORT
+    // ------------------------------------------------------------------------
+
+    std::optional<unswbc::Direction> last_resort(
+        int round_num,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        unswbc::Position here =
+            unswbc::ct->get_position();
+
+        auto portals =
+            Search::portal_directions(
+                here,
+                round_num
+            );
+
+        if (!portals.empty()) {
+            Memory::remember_portal_crossing(
+                portals[0].second,
+                round_num
+            );
+
+            return portals[0].first;
+        }
+
+        if (desperate_split(others))
+            return std::nullopt;
+
+        for (auto d :
+            unswbc::Direction::get_direction_list()) {
+
+            unswbc::Position nxt =
+                here.add_dir(d);
+
+            auto* tile =
+                unswbc::ct->get_tile(nxt);
+
+            if (tile) {
+
+                auto* dragon =
+                    tile->get_dragon();
+
+                if (dragon != nullptr &&
+                    dragon->get_team() ==
+                        unswbc::ct->get_team() &&
+                    dragon->is_head()) {
+
+                    suicide_bot();
+
+                    return std::nullopt;
+                }
+            }
+        }
+
+        return unswbc::ct->get_dir();
+    }
+
+    // ------------------------------------------------------------------------
+    // NORMAL SPLIT
+    // ------------------------------------------------------------------------
+
+    bool try_split(
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        if (!State::AGGRESSIVE ||
+            unswbc::ct->get_length() <
+                State::SPLIT_MIN_LENGTH) {
+
+            return false;
+        }
+
+        // Don't split while too many allies are nearby.
+        if (nearby_ally_count(others) >
+            State::MAX_NEARBY_ALLIES_TO_SPLIT) {
+
+            return false;
+        }
+
+        // Require enough room first.
+        if (!has_room_to_split())
+            return false;
+
+        int length =
+            unswbc::ct->get_length();
+
+        // ------------------------------------------------------------
+        // Keep your friend's child-size rule.
+        // ------------------------------------------------------------
+
+        int child = 2;
+
+        if (length % 2 == 0) {
+
+            if ((length / 2) % 2 != 0) {
+                child = 2;
+            } else {
+                child = length / 2;
+            }
+
+        } else {
+            child = 2;
+        }
+
+        // ------------------------------------------------------------
+        // NEW:
+        // Predict whether BOTH resulting dragons are safe.
+        // ------------------------------------------------------------
+
+        if (!unswbc::ct->can_split(child))
+            return false;
+
+        if (!split_is_safe(
+                child,
+                others
+            )) {
+            return false;
+        }
+
+        unswbc::ct->do_split(child);
+
+        return true;
+    }
+
+    // ------------------------------------------------------------------------
+    // SEPPUKU / TEAMMATE SIZE CHECK
+    // ------------------------------------------------------------------------
+
+    bool seppuku_conditions(
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        int max_length = 0;
+        int max_visible = 0;
+
+        for (const auto& kv : State::TEAMMATES) {
+            max_length = std::max(
+                max_length,
+                kv.second.length
+            );
+        }
+
+        bool ally_found = false;
+
+        unswbc::Team my_team =
+            unswbc::ct->get_team();
+
+        for (auto* p : others) {
+
+            if (p->get_team() == my_team &&
+                p->is_head()) {
+
+                ally_found = true;
+
+                int masked =
+                    p->get_id() & Memory::ID_MASK;
+
+                if (State::TEAMMATES.count(masked)) {
+
+                    max_visible = std::max(
+                        max_visible,
+                        State::TEAMMATES[masked].length
+                    );
+                }
+            }
+        }
+
+        double max_avg =
+            (max_length +
+            max_visible +
+            max_visible) / 3.0;
+
+        if (unswbc::ct->get_length() <
+            max_visible) {
+
+            return ally_found;
+        }
+
+        if (unswbc::ct->get_length() <
+            max_avg * 0.8) {
+
+            return ally_found;
+        }
+
+        return false;
+    }
+
+    // ========================================================================
+    // CHOOSE DIRECTION
+    //
+    // Your existing choose_direction() is kept unchanged.
+    // ========================================================================
+
+    std::optional<unswbc::Direction> choose_direction(
+        const std::vector<unswbc::DragonPart*>& others,
+        int round_num,
+        const std::vector<unswbc::Tile>& tiles,
+        double* deadline
+    ) {
+        unswbc::Position here =
+            unswbc::ct->get_position();
+
+        auto targets =
+            Search::gather_pearl_targets(
+                here,
+                tiles
+            );
+
+        auto cluster =
+            Search::find_pearl_cluster(targets);
+
+        if (!cluster.empty()) {
+            targets = cluster;
+        }
+
+        std::optional<unswbc::Position> frontier_target;
+
+        if (targets.empty()) {
+
+            frontier_target =
+                Search::nearest_unexplored(
+                    here,
+                    round_num
+                );
+
+            if (frontier_target.has_value()) {
+
+                targets.push_back({
+                    frontier_target.value(),
+                    0
+                });
+            }
+        }
+
+        std::vector<unswbc::Position> target_positions;
+
+        for (auto& t : targets) {
+            target_positions.push_back(t.first);
+        }
+
+        std::unordered_map<
+            unswbc::Direction,
+            unswbc::Position,
+            DirectionHash
+        > moves;
+
+        for (auto d :
+            unswbc::Direction::get_direction_list()) {
+
+            auto nxt =
+                Search::open_step(here, d);
+
+            if (nxt) {
+                moves[d] = *nxt;
+            }
+        }
+
+        auto portal_options =
+            Search::portal_directions(
+                here,
+                round_num
+            );
+
+        std::unordered_set<
+            unswbc::Direction,
+            DirectionHash
+        > unknown_portals;
+
+        for (auto [d, pid] : portal_options) {
+
+            unswbc::Position destination;
+
+            if (Search::get_portal_destination(
+                    here,
+                    d,
+                    destination
+                )) {
+
+                moves[d] = destination;
+
+            } else {
+                unknown_portals.insert(d);
+            }
+        }
+
+        if (moves.empty() &&
+            unknown_portals.empty()) {
+
+            return std::nullopt;
+        }
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > fatal_zone;
+
+        if (!State::AGGRESSIVE) {
+
+            fatal_zone =
+                Search::build_fatal_zone(others);
+
+            std::unordered_map<
+                unswbc::Direction,
+                unswbc::Position,
+                DirectionHash
+            > safe_moves;
+
+            for (auto& kv : moves) {
+
+                if (!Search::is_fatal(
+                        kv.second,
+                        fatal_zone
+                    )) {
+
+                    safe_moves.insert(kv);
+                }
+            }
+
+            if (!safe_moves.empty()) {
+                moves = safe_moves;
+            }
+        }
+
+        int needed =
+            State::AGGRESSIVE
+                ? unswbc::ct->get_length()
+                : unswbc::ct->get_length() + 1;
+
+        std::unordered_map<
+            unswbc::Direction,
+            unswbc::Position,
+            DirectionHash
+        > roomy;
+
+        int best_space = -1;
+
+        for (auto& kv : moves) {
+
+            int sp =
+                Search::room(
+                    kv.second,
+                    here,
+                    needed,
+                    *deadline
+                );
+
+            best_space =
+                std::max(
+                    best_space,
+                    sp
+                );
+
+            if (sp >= needed) {
+                roomy.insert(kv);
+            }
+        }
+
+        if (!roomy.empty()) {
+            moves = roomy;
+
+        } else {
+
+            std::unordered_map<
+                unswbc::Direction,
+                unswbc::Position,
+                DirectionHash
+            > best_moves;
+
+            for (auto& kv : moves) {
+
+                if (Search::room(
+                        kv.second,
+                        here,
+                        needed,
+                        *deadline
+                    ) == best_space) {
+
+                    best_moves.insert(kv);
+                }
+            }
+
+            moves = best_moves;
+        }
+
+        unswbc::Direction facing =
+            unswbc::ct->get_dir();
+
+        double now =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now()
+                    .time_since_epoch()
+            ).count();
+
+        // ------------------------------------------------------------
+        // Time-pressure fallback
+        // ------------------------------------------------------------
+
+        if (now >= *deadline) {
+
+            unswbc::Direction best_d =
+                moves.begin()->first;
+
+            auto score =
+                [&](unswbc::Direction d) {
+
+                    if (targets.empty()) {
+
+                        return std::make_tuple(
+                            0,
+                            Search::pearl_dist(
+                                moves[d],
+                                targets
+                            ),
+                            danger(
+                                moves[d],
+                                others
+                            ),
+                            direction_to_index(d)
                         );
 
-                        return portal_dir;
+                    } else {
+
+                        return std::make_tuple(
+                            Search::pearl_dist(
+                                moves[d],
+                                targets
+                            ),
+                            static_cast<int>(
+                                d !=
+                                unswbc::ct->get_dir()
+                            ),
+                            danger(
+                                moves[d],
+                                others
+                            ),
+                            direction_to_index(d)
+                        );
                     }
+                };
+
+            auto best_s =
+                score(best_d);
+
+            for (auto& kv : moves) {
+
+                auto s =
+                    score(kv.first);
+
+                if (s < best_s) {
+                    best_s = s;
+                    best_d = kv.first;
                 }
             }
 
             return best_d;
         }
 
+        // ------------------------------------------------------------
+        // Normal decision-making
+        // ------------------------------------------------------------
+
+        unswbc::Direction best_d =
+            moves.begin()->first;
+
+        if (State::AGGRESSIVE) {
+
+            auto score =
+                [&](unswbc::Direction d) {
+
+                    if (targets.empty()) {
+
+                        return std::make_tuple(
+                            0,
+                            0,
+                            d != facing,
+                            direction_to_index(d)
+                        );
+
+                    } else {
+
+                        return std::make_tuple(
+                            Search::pearl_dist_astar(
+                                moves[d],
+                                targets,
+                                fatal_zone,
+                                *deadline,
+                                false,
+                                target_positions
+                            ),
+                            0,
+                            d != facing,
+                            direction_to_index(d)
+                        );
+                    }
+                };
+
+            auto best_s =
+                score(best_d);
+
+            for (auto& kv : moves) {
+
+                auto s =
+                    score(kv.first);
+
+                if (s < best_s) {
+                    best_s = s;
+                    best_d = kv.first;
+                }
+            }
+
+        } else {
+
+            auto score =
+                [&](unswbc::Direction d) {
+
+                    if (targets.empty()) {
+
+                        return std::make_tuple(
+                            danger(
+                                moves[d],
+                                others
+                            ),
+                            0,
+                            0,
+                            d != facing,
+                            direction_to_index(d)
+                        );
+
+                    } else {
+
+                        return std::make_tuple(
+                            danger(
+                                moves[d],
+                                others
+                            ),
+                            0,
+                            Search::pearl_dist_astar(
+                                moves[d],
+                                targets,
+                                fatal_zone,
+                                *deadline,
+                                true,
+                                target_positions
+                            ),
+                            d != facing,
+                            direction_to_index(d)
+                        );
+                    }
+                };
+
+            auto best_s =
+                score(best_d);
+
+            for (auto& kv : moves) {
+
+                auto s =
+                    score(kv.first);
+
+                if (s < best_s) {
+                    best_s = s;
+                    best_d = kv.first;
+                }
+            }
+        }
+
+        if (targets.empty() &&
+            !unknown_portals.empty()) {
+
+            unswbc::Direction portal_choice =
+                *unknown_portals.begin();
+
+            double best_portal_danger =
+                1e9;
+
+            int best_portal_facing = 2;
+            int best_portal_index = 100;
+
+            for (auto [portal_dir, portal_id] :
+                portal_options) {
+
+                if (!unknown_portals.count(
+                        portal_dir
+                    )) {
+
+                    continue;
+                }
+
+                unswbc::Position entrance =
+                    here.add_dir(portal_dir);
+
+                double portal_danger =
+                    danger(
+                        entrance,
+                        others
+                    );
+
+                int facing_penalty =
+                    portal_dir != facing;
+
+                int dir_index =
+                    direction_to_index(
+                        portal_dir
+                    );
+
+                if (
+                    portal_danger <
+                        best_portal_danger ||
+
+                    (
+                        portal_danger ==
+                            best_portal_danger &&
+                        facing_penalty <
+                            best_portal_facing
+                    ) ||
+
+                    (
+                        portal_danger ==
+                            best_portal_danger &&
+                        facing_penalty ==
+                            best_portal_facing &&
+                        dir_index <
+                            best_portal_index
+                    )
+                ) {
+
+                    portal_choice =
+                        portal_dir;
+
+                    best_portal_danger =
+                        portal_danger;
+
+                    best_portal_facing =
+                        facing_penalty;
+
+                    best_portal_index =
+                        dir_index;
+                }
+            }
+
+            for (auto [portal_dir, portal_id] :
+                portal_options) {
+
+                if (portal_dir ==
+                    portal_choice) {
+
+                    Memory::remember_portal_crossing(
+                        portal_id,
+                        round_num
+                    );
+
+                    return portal_dir;
+                }
+            }
+        }
+
+        return best_d;
     }
+
+}
