@@ -560,6 +560,36 @@ namespace Search {
         unswbc::Position start,
         int round_num
     ) {
+        // ------------------------------------------------------------
+        // Continue pursuing the current exploration target.
+        // Stop once it has been reached, occupied, or becomes visible.
+        // ------------------------------------------------------------
+
+        if (State::EXPLORATION_TARGET.has_value()) {
+            unswbc::Position target =
+                State::EXPLORATION_TARGET.value();
+
+            // We reached the target.
+            if (start == target) {
+                State::EXPLORATION_TARGET.reset();
+            }
+            // Target is now occupied.
+            else if (Memory::known_occupied(target)) {
+                State::EXPLORATION_TARGET.reset();
+            }
+            // Target is now visible, so we have new information.
+            else if (unswbc::ct->get_tile(target) != nullptr) {
+                State::EXPLORATION_TARGET.reset();
+            }
+            else {
+                return target;
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Find the nearest unexplored tile.
+        // ------------------------------------------------------------
+
         std::deque<std::pair<unswbc::Position, int>> queue;
 
         std::unordered_set<
@@ -581,8 +611,11 @@ namespace Search {
 
             expanded++;
 
-            for (auto neighbour : get_neighbors(pos, round_num)) {
-                unswbc::Position nxt = neighbour.position;
+            for (auto neighbour :
+                get_neighbors(pos, round_num)) {
+
+                unswbc::Position nxt =
+                    neighbour.position;
 
                 if (seen.count(nxt)) {
                     continue;
@@ -590,11 +623,14 @@ namespace Search {
 
                 seen.insert(nxt);
 
+                // Check occupancy before accepting the frontier.
                 if (Memory::known_occupied(nxt)) {
                     continue;
                 }
 
+                // First unexplored tile found by BFS.
                 if (State::KNOWN_EDGES.count(nxt) == 0) {
+                    State::EXPLORATION_TARGET = nxt;
                     return nxt;
                 }
 

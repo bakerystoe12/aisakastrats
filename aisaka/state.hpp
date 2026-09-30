@@ -22,6 +22,8 @@ namespace State {
     inline const double TURN_TIME_BUDGET = 0.5;
     inline const int BFS_DEADLINE_CHECK_EVERY = 4;
 
+    inline std::optional<unswbc::Position> EXPLORATION_TARGET;
+
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 3;
     inline const double PEARL_ROOM_WEIGHT = 0.0;
     inline const double SPLIT_ROOM_MULTIPLIER = 1.5;
