@@ -340,8 +340,9 @@ class Controller {
         std::cout << "MOVE " << direction.value << "\n";
     }
     // One tile per direction, all in this turn.
-    // The helper sends whatever you pass, and a sprint of n steps costs n-1
-    // segments, so the dragon must be longer than n.
+    // The helper sends whatever you pass. A dragon of length L takes its first
+    // ceil(L / 4) steps free and pays a segment for each step after them, and it
+    // must keep at least 2 segments.
     void make_moves(std::vector<Direction> const& directions) {
         std::cout << "MOVE ";
         for (Direction direction : directions)
