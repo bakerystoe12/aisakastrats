@@ -82,7 +82,7 @@ void execute_turn() {
     }
     // choose direction theoretically should just do everything now
 
-    Decision::choose_move(others, round_num, tiles, deadline);
+    Decision::choose_move(others, round_num, tiles, &deadline);
 }
 
 int main() {
