@@ -13,7 +13,6 @@
 namespace State {
     inline int WIDTH = 0;
     inline int HEIGHT = 0;
-    inline bool SONAR3 = false;
     inline bool AGGRESSIVE = true;
 
     inline const int BFS_CAP = 1000;

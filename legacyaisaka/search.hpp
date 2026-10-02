@@ -26,6 +26,7 @@ namespace Search {
 
     return unswbc::Position(x, y);
     }
+
     bool get_portal_destination(
     unswbc::Position pos,
     unswbc::Direction d,
@@ -140,7 +141,7 @@ namespace Search {
         std::unordered_set<unswbc::Position, unswbc::PositionHash> zone;
         unswbc::Team my_team = unswbc::ct->get_team();
         for (auto* part : others) {
-            if (!part->is_head() || part->get_team() == my_team) continue;
+            if (!part->is_head()) continue;
             unswbc::Position p = part->get_position();
             zone.insert(p);
             for (auto d : unswbc::Direction::get_direction_list()) zone.insert(p.add_dir(d));
@@ -217,7 +218,7 @@ namespace Search {
         return count;
     }
 
-        double split_room(
+    double split_room(
         unswbc::Position start,
         unswbc::Position came_from,
         double needed,
