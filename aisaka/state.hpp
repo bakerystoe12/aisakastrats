@@ -16,7 +16,6 @@ namespace State {
     inline bool AGGRESSIVE = true;
 
     inline const int BFS_CAP = 1000;
-    inline const int PORTAL_ROOM_CAP = 50;
     inline const int UNEXPLORED_BFS_CAP = 500;
     inline const double TURN_TIME_BUDGET = 0.75;
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;
@@ -27,13 +26,8 @@ namespace State {
     > EXPLORATION_VISITED;
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 4;
-    inline const double PEARL_ROOM_WEIGHT = 0.0;
-    inline const double SPLIT_ROOM_MULTIPLIER = 1;
     inline const int PEARL_SPAWN_HORIZON = 10;
     inline const int SPLIT_MIN_LENGTH = 4;
-    inline const double PORTAL_CHANCE = 1.0;
-    
-    inline std::unordered_set<int> UNSAFE_PORTALS;
 
     inline std::deque<unswbc::Position> OWN_BODY;
     inline std::unordered_set<unswbc::Position, unswbc::PositionHash> OWN_BODY_SET;

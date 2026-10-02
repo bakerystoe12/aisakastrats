@@ -61,9 +61,7 @@ void execute_turn() {
     auto others = other_dragon_parts(tiles);
     
 
-    State::EXPLORATION_VISITED.insert(
-        unswbc::ct->get_position()
-    );
+    State::EXPLORATION_VISITED.insert(unswbc::ct->get_position());
     Memory::update_own_body();
     Memory::remember_vision(tiles);
     Memory::read_sonar(round_num);
@@ -82,24 +80,13 @@ void execute_turn() {
     if (round_num > 350){
         Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 0;
     }
-
-    auto opt_d = Decision::choose_direction(others, round_num, tiles, &deadline);
-    if (!opt_d.has_value()) {
-        auto fallback = Decision::last_resort(round_num, others);
-        if (fallback.has_value()) {
-            unswbc::ct->make_move(fallback.value());
-        }
-        return;
-    }
-
-    unswbc::ct->make_move(opt_d.value());
+    // choose direction theoretically should just do everything now
 }
 
 int main() {
     auto init_tuple = unswbc::init();
     State::WIDTH = unswbc::game->get_map_size().first;
     State::HEIGHT = unswbc::game->get_map_size().second;
-    State::SONAR3 = true; 
     bool rolled = false;
 
     while (unswbc::update(*unswbc::ct, *unswbc::game)) {
