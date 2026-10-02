@@ -81,6 +81,8 @@ void execute_turn() {
         Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 0;
     }
     // choose direction theoretically should just do everything now
+
+    Decision::choose_move(others, round_num, tiles, deadline);
 }
 
 int main() {
