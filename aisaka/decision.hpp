@@ -73,19 +73,25 @@ namespace Decision{
         LAST RESORT
     ===========================================================*/
 
-    std::optional<unswbc::Direction> last_resort(int round_num, const std::vector<unswbc::DragonPart*>& others) {
+    void last_resort(int round_num, const std::vector<unswbc::DragonPart*>& others) {
         unswbc::Position here = unswbc::ct->get_position();
+
+        unswbc::Direction final_dir = unswbc::ct->get_dir(); // kamikaze or just go straight 
+
+        bool suicide = false;
+        bool kamikaze = false;
 
         auto portals = Search::portal_directions(here, round_num);
 
         if (!portals.empty()){
             Memory::remember_portal_crossing(portals[0].second, round_num);
-            return portals[0].first;
+            unswbc::ct->make_move(portals[0].first);
+            return;
         }
 
 
         if (desperate_split(others))
-            return std::nullopt;
+            return;
 
         for (auto d : unswbc::Direction::get_direction_list()) {
             unswbc::Position nxt =
@@ -100,17 +106,30 @@ namespace Decision{
                     tile->get_dragon();
 
                 if (dragon != nullptr &&
-                    dragon->get_team() ==
-                        unswbc::ct->get_team() &&
+                    dragon->get_team() != unswbc::ct->get_team() &&
                     dragon->is_head()) {
+                        final_dir = d;
+                        kamikaze = true;
+                    } 
 
-                    suicide_bot();
-
-                    return std::nullopt;
+                if (dragon != nullptr &&
+                    dragon->get_team() == unswbc::ct->get_team() &&
+                    dragon->is_head()) {
+                    suicide = true;
                 }
             }
         }
-        return unswbc::ct->get_dir();
+        if (kamikaze) { 
+            unswbc::ct->make_move(final_dir);
+            return;
+        } 
+
+        if (suicide){
+            suicide_bot();
+            return;
+        }
+
+        unswbc::ct->make_move(final_dir);
     }
 
     bool desperate_split(
@@ -167,6 +186,109 @@ namespace Decision{
 
         return true;
     }
+
+    /*===============================================================
+    choose move helpers
+    ===============================================================*/
+    std::vector<std::pair<unswbc::Position, int>> get_targets(
+        unswbc::Position here,
+        const std::vector<unswbc::Tile>& tiles,
+        int round_num
+    ) {
+        auto targets =
+            Search::gather_pearl_targets(
+                here,
+                tiles
+            );
+
+        auto cluster =
+            Search::find_pearl_cluster(targets);
+
+        if (!cluster.empty()) {
+            targets = cluster;
+        }
+
+        // No suitable pearl targets -> explore
+        if (targets.empty()) {
+
+            // Normal exploration
+            auto frontier_target =
+                Search::nearest_unexplored(
+                    here,
+                    round_num
+                );
+
+            if (frontier_target.has_value()) {
+                targets.push_back({
+                    frontier_target.value(),
+                    0
+                });
+            }
+
+            // Aggressive dragons can explore unknown portals
+            if (State::AGGRESSIVE) {
+
+                for (const auto& [portal_id, edges] :
+                    State::PORTALS) {
+
+                    // Only one endpoint known -> destination unknown
+                    if (edges.size() != 1)
+                        continue;
+
+                    uint64_t key = edges.front();
+
+                    auto portal_it =
+                        State::PORTAL_EDGES.find(key);
+
+                    if (portal_it == State::PORTAL_EDGES.end())
+                        continue;
+
+                    // Recover the position used by edge_key().
+                    unswbc::Position entrance(
+                        static_cast<int>(key >> 32),
+                        static_cast<int>((key >> 1) & 0x7FFFFFFF)
+                    );
+
+                    if (Memory::known_occupied(entrance))
+                        continue;
+
+                    targets.push_back({
+                        entrance,
+                        0
+                    });
+                }
+            }
+        }
+
+        return targets;
+    }
+
+    std::vector<unswbc::Position> get_target_positions(
+        const std::vector<std::pair<unswbc::Position, int>>& targets
+    ) {
+        std::vector<unswbc::Position> target_positions;
+
+        for (auto& t : targets) {
+            target_positions.push_back(t.first);
+        }
+
+        return target_positions;
+    }
+
+    bool has_available_move(unswbc::Position here, const std::vector<unswbc::Tile>& tiles){
+        for (auto d :
+            unswbc::Direction::get_direction_list()) {
+
+            auto nxt =
+                Search::open_step(here, d);
+
+            if (nxt.has_value()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /*
         CHOOSE MOVE STRUCTURE:
 
@@ -231,13 +353,26 @@ namespace Decision{
                 - execute up to max_steps movement budget
     */
 
+    /* ===================================================
+        CHOOSE MOVE
+    ====================================================*/
 
    void choose_move(
         const std::vector<unswbc::DragonPart*>& others,
         int round_num,
         const std::vector<unswbc::Tile>& tiles,
-        double* deadline){
-        
+        double* deadline
+    ){  
+        unswbc::Position here = unswbc::ct->get_position();
 
+        auto targets = get_targets(here,tiles,round_num);
+
+        auto target_positions = get_target_positions(targets);
+
+        if (!has_available_move(here, tiles)){
+            last_resort(round_num, others);
+            return;
+        }
+        
     }
 } // decision closer
