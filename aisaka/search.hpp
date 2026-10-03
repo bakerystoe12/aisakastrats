@@ -7,6 +7,9 @@
 #include <vector>
 #include <cstdint>
 #include <optional>
+#include <algorithm>
+#include <chrono>
+#include <queue>
 
 
 namespace Search {
@@ -21,10 +24,18 @@ namespace Search {
         Constructors
     ==================================================================*/
 
+    enum class SearchMode {
+        SAFE,
+        AGGRESSIVE
+    };  
+
     struct SearchNeighbor {
-        unswbc::Position position;
-        int cost;
-        bool through_portal;
+    unswbc::Position position;
+    unswbc::Position from;
+    unswbc::Direction direction;
+    int cost;
+    bool through_portal;
+    int portal_id = -1;
     };
 
     struct AStarNode {
@@ -37,66 +48,14 @@ namespace Search {
         }
     };
 
+    struct PathResult {
+        unswbc::Position target;
+        std::vector<unswbc::Direction> directions;
+        std::vector<unswbc::Position> positions;
+        int cost = 0;
+    };
 
-    /* ========================================================================
-        Helper functions: dist, tile_ever_seen, open_step, get_neighbors
-    =========================================================================*/
-
-    int dist(unswbc::Position a, unswbc::Position b) { // manhattan distance
-        int w = State::WIDTH, h = State::HEIGHT;
-        int dx = std::abs(a.x - b.x); dx = std::min(dx, w - dx);
-        int dy = std::abs(a.y - b.y); dy = std::min(dy, h - dy);
-        return dx + dy;
-    }
-
-    bool tile_ever_seen(unswbc::Position pos) {
-        if (unswbc::ct->get_tile(pos)) return true;
-        return State::KNOWN_EDGES.count(pos) > 0;
-    }
-
-    std::optional<unswbc::Position> open_step(unswbc::Position pos, unswbc::Direction d) {
-        auto* tile = unswbc::ct->get_tile(pos);
-        if (!tile || tile->get_edge(d).get_edge_type() != unswbc::EdgeType::EMPTY) return std::nullopt;
-        unswbc::Position nxt = pos.add_dir(d);
-        auto* ahead = unswbc::ct->get_tile(nxt);
-        if (!ahead || ahead->get_dragon()) return std::nullopt;
-        return nxt;
-    }
-
-    std::vector<SearchNeighbor> get_neighbors(unswbc::Position pos, int round_num) {
-
-        std::vector<SearchNeighbor> result;
-
-        for (auto d : unswbc::Direction::get_direction_list()) {
-
-            auto edge_type = Memory::known_edge_type(pos, d);
-
-            if (edge_type == unswbc::EdgeType::KELP)
-                continue;
-
-            if (edge_type == unswbc::EdgeType::EMPTY) {
-                result.push_back({
-                    pos.add_dir(d),
-                    1,
-                    false
-                });
-                continue;
-            }
-
-            unswbc::Position destination;
-
-            if (get_portal_destination(pos, d, destination)) {
-                result.push_back({
-                    destination,
-                    1,
-                    true
-                });
-            }
-        }
-        return result;
-    }
-
-    /* =============================================================
+    /*=============================================================
         Portals handling
     ==============================================================*/
 
@@ -156,9 +115,174 @@ namespace Search {
         }
         return options;
     }
+
+    /* ========================================================================================
+        Helper functions: dist, tile_ever_seen, open_step, get_neighbors, get_known neighbors
+    =========================================================================================*/
+
+    int dist(unswbc::Position a, unswbc::Position b) { // manhattan distance
+        int w = State::WIDTH, h = State::HEIGHT;
+        int dx = std::abs(a.x - b.x); dx = std::min(dx, w - dx);
+        int dy = std::abs(a.y - b.y); dy = std::min(dy, h - dy);
+        return dx + dy;
+    }
+
+    bool tile_ever_seen(unswbc::Position pos) {
+        if (unswbc::ct->get_tile(pos)) return true;
+        return State::KNOWN_EDGES.count(pos) > 0;
+    }
+
+    std::optional<unswbc::Position> open_step(unswbc::Position pos, unswbc::Direction d) {
+        auto* tile = unswbc::ct->get_tile(pos);
+        if (!tile || tile->get_edge(d).get_edge_type() != unswbc::EdgeType::EMPTY) return std::nullopt;
+        unswbc::Position nxt = pos.add_dir(d);
+        auto* ahead = unswbc::ct->get_tile(nxt);
+        if (!ahead || ahead->get_dragon()) return std::nullopt;
+        return nxt;
+    }
+
+    std::vector<SearchNeighbor> get_neighbors(
+        unswbc::Position pos,
+        int round_num
+    ) {
+        std::vector<SearchNeighbor> result;
+
+        for (auto d : unswbc::Direction::get_direction_list()) {
+
+            auto edge_type = Memory::known_edge_type(pos, d);
+
+            if (edge_type == unswbc::EdgeType::KELP)
+                continue;
+
+            if (edge_type == unswbc::EdgeType::EMPTY) {
+                result.push_back({
+                    pos.add_dir(d),
+                    pos,
+                    d,
+                    1,
+                    false,
+                    -1
+                });
+                continue;
+            }
+
+            unswbc::Position destination;
+
+            if (get_portal_destination(pos, d, destination)) {
+
+                auto edge_key = Memory::edge_key(pos, d);
+                int portal_id = State::PORTAL_EDGES.at(edge_key);
+
+                result.push_back({
+                    destination,
+                    pos,
+                    d,
+                    1,
+                    true,
+                    portal_id
+                });
+            }
+        }
+
+        return result;
+    }
+
+    std::vector<SearchNeighbor> get_known_neighbors (  // used for search, cant risk on other stuff
+        unswbc::Position pos,
+        int round_num
+    ) {
+        std::vector<SearchNeighbor> result;
+
+        for (auto d : unswbc::Direction::get_direction_list()) {
+
+            if (!Memory::edge_is_known(pos, d))
+                continue;
+
+            auto edge_type = Memory::known_edge_type(pos, d);
+
+            if (edge_type == unswbc::EdgeType::KELP)
+                continue;
+
+            if (edge_type == unswbc::EdgeType::EMPTY) {
+                result.push_back({
+                    pos.add_dir(d),
+                    pos,
+                    d,
+                    1,
+                    false,
+                    -1
+                });
+                continue;
+            }
+
+            unswbc::Position destination;
+
+            if (get_portal_destination(pos, d, destination)) {
+
+                auto edge_key = Memory::edge_key(pos, d);
+                int portal_id = State::PORTAL_EDGES.at(edge_key);
+
+                result.push_back({
+                    destination,
+                    pos,
+                    d,
+                    1,
+                    true,
+                    portal_id
+                });
+            }
+        }
+
+        return result;
+    }
+
     /* ======================================================================
-     Fatal Zone
+     Fatal Zone + Safe zone
     =======================================================================*/
+
+    std::unordered_set<
+        unswbc::Position,
+        unswbc::PositionHash
+    > build_safe_zone(const std::vector<unswbc::DragonPart*>& others) {
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > zone;
+
+        unswbc::Team my_team = unswbc::ct->get_team();
+
+        for (auto part : others) {
+            if (!part->is_head() || part->get_team() == my_team)
+                continue;
+
+            unswbc::Position enemy = part->get_position();
+
+            zone.insert(enemy);
+
+            for (int dx = -State::SAFE_DANGER_RADIUS;
+                dx <= State::SAFE_DANGER_RADIUS;
+                ++dx) {
+
+                for (int dy = -State::SAFE_DANGER_RADIUS;
+                    dy <= State::SAFE_DANGER_RADIUS;
+                    ++dy) {
+
+                    if (std::abs(dx) + std::abs(dy)
+                        > State::SAFE_DANGER_RADIUS)
+                        continue;
+
+                    unswbc::Position p(
+                        (enemy.x + dx + State::WIDTH) % State::WIDTH,
+                        (enemy.y + dy + State::HEIGHT) % State::HEIGHT
+                    );
+
+                    zone.insert(p);
+                }
+            }
+        }
+
+        return zone;
+    }
 
     std::unordered_set<unswbc::Position, unswbc::PositionHash> build_fatal_zone(const std::vector<unswbc::DragonPart*>& others) {
         std::unordered_set<unswbc::Position, unswbc::PositionHash> zone;
@@ -312,9 +436,61 @@ namespace Search {
         }
         return best_group.empty() ? targets : best_group;
     }
+    /*===============================================================================
+        Pathfinding helpers
+    ===============================================================================*/
+    bool valid_transition(
+        const SearchNeighbor& neighbour,
+        SearchMode mode,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& fatal_zone,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& safe_zone,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& blocked,
+        int round_num
+    ) {
+        unswbc::Position nxt = neighbour.position;
+
+        // 1. Already blocked during this turn
+        if (blocked.count(nxt))
+            return false;
+
+        // 2. Known occupied tile
+        if (Memory::known_occupied(nxt))
+            return false;
+
+        // 3. Hard danger: avoid in both modes
+        if (is_fatal(nxt, fatal_zone))
+            return false;
+
+        // 4. Extra danger radius: avoid only when SAFE
+        if (mode == SearchMode::SAFE &&
+            is_fatal(nxt, safe_zone))
+            return false;
+
+        // 5. Portal cooldown
+        if (neighbour.through_portal) {
+            int cooldown = unswbc::ct->get_length();
+
+            if (neighbour.portal_id == State::LAST_PORTAL_ID &&
+                round_num - State::LAST_PORTAL_ROUND < cooldown) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
 
     /* ===========================================================
-        PEARL PATHFINDING: 
+        PATHFINDING: 
     ============================================================*/
 
     int pearl_dist(unswbc::Position pos, const std::vector<std::pair<unswbc::Position, int>>& targets) { // timeout fallback, uses manhanttan dist to pearls for best move
@@ -486,6 +662,293 @@ namespace Search {
 
         return best;
     }
+
+    /* ================================================================
+        TARGET PATHFINDING
+    ================================================================ */
+    std::optional<PathResult> dijkstra_targets(
+        unswbc::Position here,
+        const std::vector<
+            std::pair<unswbc::Position, int>
+        >& targets,
+
+        SearchMode mode,
+
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& fatal_zone,
+
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& safe_zone,
+
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& blocked,
+
+        int cap,
+        double* deadline,
+        int round_num
+    ) {
+        if (targets.empty())
+            return std::nullopt;
+
+        struct Parent {
+            unswbc::Position previous;
+            unswbc::Direction direction;
+            Parent(
+                unswbc::Position previous,
+                unswbc::Direction direction
+            )
+                :previous(previous),
+                direction(direction)
+            {}
+        };
+
+        // ------------------------------------------------------------
+        // Target lookup
+        // ------------------------------------------------------------
+
+        std::unordered_map<
+            unswbc::Position,
+            int,
+            unswbc::PositionHash
+        > target_penalty;
+
+        for (const auto& [position, penalty] : targets) {
+
+            auto it = target_penalty.find(position);
+
+            // If duplicate positions somehow occur, keep
+            // the smaller penalty.
+            if (it == target_penalty.end()) {
+                target_penalty[position] = penalty;
+            } else {
+                it->second = std::min(it->second, penalty);
+            }
+        }
+
+        // ------------------------------------------------------------
+        // Dijkstra state
+        // ------------------------------------------------------------
+
+        std::priority_queue<
+            AStarNode,
+            std::vector<AStarNode>,
+            std::greater<AStarNode>
+        > open;
+
+        std::unordered_map<
+            unswbc::Position,
+            int,
+            unswbc::PositionHash
+        > distance;
+
+        std::unordered_map<
+            unswbc::Position,
+            Parent,
+            unswbc::PositionHash
+        > came_from;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > visited;
+
+        int counter = 0;
+
+        distance[here] = 0;
+
+        open.push({
+            0,      // f == g for Dijkstra
+            0,
+            counter++,
+            here
+        });
+
+        // ------------------------------------------------------------
+        // Best target found so far
+        // ------------------------------------------------------------
+
+        int best_cost = INT_MAX;
+
+        std::vector<unswbc::Position> best_targets;
+
+        // ------------------------------------------------------------
+        // Search
+        // ------------------------------------------------------------
+
+        while (!open.empty()) {
+
+            if (deadline != nullptr) {
+                double now =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now().time_since_epoch()
+                    ).count();
+
+                if (now >= *deadline)
+                    break;
+            }
+            AStarNode current = open.top();
+            open.pop();
+
+            // Already finalised
+            if (visited.count(current.pos))
+                continue;
+
+            visited.insert(current.pos);
+
+            // --------------------------------------------------------
+            // Target reached
+            // --------------------------------------------------------
+
+            auto target_it =
+                target_penalty.find(current.pos);
+
+            if (target_it != target_penalty.end()) {
+
+                int effective_cost = std::max(
+                    current.g,
+                    target_it->second
+                );
+
+                if (effective_cost < best_cost) {
+
+                    best_cost = effective_cost;
+                    best_targets.clear();
+                    best_targets.push_back(current.pos);
+
+                } else if (effective_cost == best_cost) {
+
+                    best_targets.push_back(current.pos);
+                }
+            }
+
+            // --------------------------------------------------------
+            // Search cap
+            // --------------------------------------------------------
+
+            if (static_cast<int>(visited.size()) >= cap)
+                break;
+
+            // --------------------------------------------------------
+            // Expand neighbours
+            // --------------------------------------------------------
+
+            auto neighbours =
+                get_known_neighbors(current.pos, round_num);
+
+            for (const auto& neighbour : neighbours) {
+
+                if (!valid_transition(
+                        neighbour,
+                        mode,
+                        fatal_zone,
+                        safe_zone,
+                        blocked,
+                        round_num
+                    )) {
+                    continue;
+                }
+
+                const auto next = neighbour.position;
+
+                if (visited.count(next))
+                    continue;
+
+                const int new_distance =
+                    current.g + neighbour.cost;
+
+                auto distance_it =
+                    distance.find(next);
+
+                if (distance_it != distance.end() &&
+                    new_distance >= distance_it->second) {
+                    continue;
+                }
+
+                distance[next] = new_distance;
+
+                came_from.insert_or_assign(
+                    next,
+                    Parent{
+                        current.pos,
+                        neighbour.direction
+                    }
+                );
+
+                open.push({
+                    new_distance,   // f
+                    new_distance,   // g
+                    counter++,
+                    next
+                });
+            }
+        }
+
+        // ------------------------------------------------------------
+        // No reachable target
+        // ------------------------------------------------------------
+
+        if (best_targets.empty())
+            return std::nullopt;
+
+        // ------------------------------------------------------------
+        // For now, deterministic tie-breaking
+        // ------------------------------------------------------------
+
+        const auto selected_target =
+            best_targets.front();
+
+        // ------------------------------------------------------------
+        // Reconstruct path
+        // ------------------------------------------------------------
+
+        PathResult result;
+
+        result.target = selected_target;
+        result.cost = best_cost;
+
+        auto current = selected_target;
+
+        while (current != here) {
+
+            auto parent_it =
+                came_from.find(current);
+
+            if (parent_it == came_from.end()) {
+                return std::nullopt;
+            }
+
+            const auto& parent = parent_it->second;
+
+            result.directions.push_back(
+                parent.direction
+            );
+
+            result.positions.push_back(
+                current
+            );
+
+            current = parent.previous;
+        }
+
+        std::reverse(
+            result.directions.begin(),
+            result.directions.end()
+        );
+
+        std::reverse(
+            result.positions.begin(),
+            result.positions.end()
+        );
+
+        return result;
+    }
+
 
     /* ============================================================
        PATHFINDING IF WE SEE NO PEARLS: nearest_unexplored

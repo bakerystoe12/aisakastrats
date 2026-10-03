@@ -1122,8 +1122,9 @@ namespace Search {
        Replacement for the old room() filtering step.
        Returns legal first moves that are not proven dead ends and do not
        trap a visible ally. It deliberately does not choose among them:
-       target/path scoring remains Search/Decision's job.
+       target/path scoring remains Decision's job.
     */
+
     std::vector<unswbc::Direction> non_dead_end_moves() {
         std::vector<unswbc::Direction> result;
 

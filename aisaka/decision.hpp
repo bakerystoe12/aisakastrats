@@ -73,6 +73,30 @@ namespace Decision{
         LAST RESORT
     ===========================================================*/
 
+    bool desperate_split(
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        int length =
+            unswbc::ct->get_length();
+
+        if (length <
+            2 * unswbc::Constants::MIN_SIZE) {
+            return false;
+        }
+
+        int child = std::max(
+            unswbc::Constants::MIN_SIZE,
+            length - unswbc::Constants::MIN_SIZE
+        );
+
+        if (unswbc::ct->can_split(child)){
+            unswbc::ct->do_split(child);
+            return true;
+        }
+        return false;
+    }
+
+
     void last_resort(int round_num, const std::vector<unswbc::DragonPart*>& others) {
         unswbc::Position here = unswbc::ct->get_position();
 
@@ -131,30 +155,6 @@ namespace Decision{
 
         unswbc::ct->make_move(final_dir);
     }
-
-    bool desperate_split(
-        const std::vector<unswbc::DragonPart*>& others
-    ) {
-        int length =
-            unswbc::ct->get_length();
-
-        if (length <
-            2 * unswbc::Constants::MIN_SIZE) {
-            return false;
-        }
-
-        int child = std::max(
-            unswbc::Constants::MIN_SIZE,
-            length - unswbc::Constants::MIN_SIZE
-        );
-
-        if (unswbc::ct->can_split(child)){
-            unswbc::ct->do_split(child);
-            return true;
-        }
-        return false;
-    }
-
     /* =======================================================
     * SPLITTING LOGIC
     ========================================================*/
@@ -190,7 +190,7 @@ namespace Decision{
     /*===============================================================
     choose move helpers
     ===============================================================*/
-    std::vector<std::pair<unswbc::Position, int>> get_targets(
+    std::vector<std::pair<unswbc::Position, int>> get_targets(  // gets pearls if exists, if dont get frontier, if aggresive go for portal
         unswbc::Position here,
         const std::vector<unswbc::Tile>& tiles,
         int round_num
@@ -289,6 +289,27 @@ namespace Decision{
         return false;
     }
 
+    void execute_path(const Search::PathResult& path) {
+        int length = unswbc::ct->get_length();
+        int max_moves = (length + 3) / 4;
+
+        int moves = std::min(
+            max_moves,
+            static_cast<int>(path.directions.size())
+        );
+
+        if (moves <= 0){
+            return;
+        }
+
+        std::vector<unswbc::Direction> directions(
+            path.directions.begin(),
+            path.directions.begin() + moves
+        );
+
+        unswbc::ct->make_moves(directions);
+    }
+
     /*
         CHOOSE MOVE STRUCTURE:
 
@@ -367,12 +388,43 @@ namespace Decision{
 
         auto targets = get_targets(here,tiles,round_num);
 
-        auto target_positions = get_target_positions(targets);
+        // auto target_positions = get_target_positions(targets);
 
         if (!has_available_move(here, tiles)){
             last_resort(round_num, others);
             return;
-        }
+        } 
+
+        auto fatal_zone = Search::build_fatal_zone(others);
+        auto safe_zone = Search::build_safe_zone(others);
+
+        Search::SearchMode mode =
+            State::AGGRESSIVE
+                ? Search::SearchMode::AGGRESSIVE
+                : Search::SearchMode::SAFE;
+
+        // Turn-local blocked set
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > blocked;
+
+        auto path = Search::dijkstra_targets(
+            here,
+            targets,
+            mode,
+            fatal_zone,
+            safe_zone,
+            blocked,
+            State::BFS_CAP,
+            deadline,
+            round_num
+        );
+        if (!path.has_value()) {
+                last_resort(round_num, others);
+                return;
+            }
         
+        execute_path(*path);
     }
 } // decision closer

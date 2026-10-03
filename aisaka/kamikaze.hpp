@@ -11,7 +11,7 @@
 // KAMIKAZE
 // ============================================================================
 namespace Kamikaze {
-    double KAMIKAZE_MIN_LENGTH_RATIO = 1;
+    double KAMIKAZE_MIN_LENGTH_RATIO = 1.1;
     const int KAMIKAZE_DODGE_CLOSE_RANGE = 2;
     const int KAMIKAZE_DODGE_SPRINT_RANGE = 3;
 
@@ -119,7 +119,7 @@ namespace Kamikaze {
 
         int length = unswbc::ct->get_length();
 
-        int max_sprint = length + (length + 3) / 4;
+        int max_sprint = length + ((length + 3) / 4) - 1;
 
         auto path = path_onto(unswbc::ct->get_position(), target->get_position(), 49, deadline);
 

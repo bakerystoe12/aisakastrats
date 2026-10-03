@@ -234,7 +234,25 @@ namespace Memory {
 
     // ------------------------------------------------------------------------
     // EDGE KNOWLEDGE
-    // ------------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    bool edge_is_known(unswbc::Position pos, unswbc::Direction d) {
+        if (unswbc::ct->get_tile(pos))
+            return true;
+
+        if (State::KNOWN_EDGES.count(pos)) {
+            return true;
+        }
+
+        uint64_t key = edge_key(pos, d);
+
+        if (State::KELP_EDGES.count(key))
+            return true;
+
+        if (State::PORTAL_EDGES.count(key))
+            return true;
+
+        return false;
+    }
 
     unswbc::EdgeType known_edge_type(
         unswbc::Position pos,

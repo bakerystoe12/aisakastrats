@@ -1,4 +1,0 @@
-# created by `unswbc init`
-[project]
-language = "c++"
-include = [ "*.cpp", "*.hpp", "*.cc", "*.hh", "*.c", "*.h" ]
