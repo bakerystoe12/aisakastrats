@@ -420,6 +420,7 @@ namespace Decision{
             deadline,
             round_num
         );
+    //part 6 should change this to do something else if theres no path.
         if (!path.has_value()) {
                 last_resort(round_num, others);
                 return;
