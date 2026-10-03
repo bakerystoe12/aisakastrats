@@ -19,7 +19,7 @@ namespace State {
     inline const int UNEXPLORED_BFS_CAP = 500;
     inline const double TURN_TIME_BUDGET = 0.75;
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;
-    inline const int SAFE_DANGER_RADIUS = 2;
+    inline int SAFE_DANGER_RADIUS = 2;
 
     inline std::unordered_set<
         unswbc::Position,
@@ -28,7 +28,7 @@ namespace State {
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 4;
     inline const int PEARL_SPAWN_HORIZON = 10;
-    inline const int SPLIT_MIN_LENGTH = 10;
+    inline const int SPLIT_MIN_LENGTH = 4;
 
     inline std::deque<unswbc::Position> OWN_BODY;
     inline std::unordered_set<unswbc::Position, unswbc::PositionHash> OWN_BODY_SET;

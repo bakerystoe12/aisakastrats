@@ -93,13 +93,18 @@ int main() {
 
     while (unswbc::update(*unswbc::ct, *unswbc::game)) {
         int round_num = unswbc::game->get_round_num();
+        int id = unswbc::ct->get_id();
 
         if (!rolled) {
             double progress = (round_num - 1) / 500.0;
-            double aggro_chance = std::max(1.0 - 0.5 * progress, 0.3);
+            double aggro_chance = std::max(1.0 - 0.5 * progress, 0.2);
             State::AGGRESSIVE = stable_roll(unswbc::ct->get_id(), aggro_chance);
             rolled = true;
-            if (round_num < 250) State::AGGRESSIVE = true;
+            if (round_num < 100) State::AGGRESSIVE = true;
+            if (id == 0 || id == 1){
+                State::AGGRESSIVE = false;
+                State::SAFE_DANGER_RADIUS = 4;
+            }
         }
         
         if (round_num > 400 && unswbc::ct->get_length() > 6){
