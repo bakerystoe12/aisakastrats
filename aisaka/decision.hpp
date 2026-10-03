@@ -409,6 +409,7 @@ namespace Decision{
             unswbc::PositionHash
         > blocked;
 
+
         auto path = Search::dijkstra_targets(
             here,
             targets,
@@ -420,10 +421,11 @@ namespace Decision{
             deadline,
             round_num
         );
+
         if (!path.has_value()) {
-                last_resort(round_num, others);
-                return;
-            }
+            last_resort(round_num, others);
+            return;
+        }
         
         execute_path(*path);
     }

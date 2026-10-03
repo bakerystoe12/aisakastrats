@@ -14,6 +14,7 @@ namespace State {
     inline int WIDTH = 0;
     inline int HEIGHT = 0;
     inline bool AGGRESSIVE = true;
+    inline bool IS_QUEEN = false;
 
     inline const int BFS_CAP = 1000;
     inline const int UNEXPLORED_BFS_CAP = 500;

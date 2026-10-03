@@ -345,7 +345,7 @@ namespace Search {
             visited.insert(node.pos);
             expanded++;
 
-            for (auto neighbour : get_neighbors(
+            for (auto neighbour : get_known_neighbors(
                 node.pos,
                 unswbc::game->get_round_num()
             )) {
@@ -503,7 +503,7 @@ namespace Search {
     /* ================================================================
         TARGET PATHFINDING
     ================================================================ */
-    std::optional<PathResult> dijkstra_targets(
+    std::optional<PathResult> dijkstra_targets( //                 DIJKSTRA targets ===================================
         unswbc::Position here,
         const std::vector<
             std::pair<unswbc::Position, int>
@@ -626,8 +626,9 @@ namespace Search {
                         std::chrono::steady_clock::now().time_since_epoch()
                     ).count();
 
-                if (now >= *deadline)
+                if (now >= *deadline){
                     break;
+                }
             }
             AStarNode current = open.top();
             open.pop();
@@ -668,8 +669,9 @@ namespace Search {
             // Search cap
             // --------------------------------------------------------
 
-            if (static_cast<int>(visited.size()) >= cap)
+            if (static_cast<int>(visited.size()) >= cap){
                 break;
+            }
 
             // --------------------------------------------------------
             // Expand neighbours
@@ -730,8 +732,9 @@ namespace Search {
         // No reachable target
         // ------------------------------------------------------------
 
-        if (best_targets.empty())
+        if (best_targets.empty()){
             return std::nullopt;
+        }
 
         // ------------------------------------------------------------
         // For now, deterministic tie-breaking
