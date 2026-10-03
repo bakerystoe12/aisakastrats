@@ -423,7 +423,7 @@ namespace Decision{
         );
         
         if (!path.has_value()) {
-            last_resort(round_num, others);
+            // to do
             return;
         }
         

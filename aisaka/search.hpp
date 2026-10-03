@@ -467,7 +467,7 @@ namespace Search {
             return false;
 
         // 3. Hard danger: avoid in both modes
-        if (is_fatal(nxt, fatal_zone))
+        if (mode == SearchMode::SAFE && is_fatal(nxt, fatal_zone))
             return false;
 
         // 4. Extra danger radius: avoid only when SAFE
@@ -503,29 +503,13 @@ namespace Search {
     /* ================================================================
         TARGET PATHFINDING
     ================================================================ */
-    std::optional<PathResult> dijkstra_targets( //                 DIJKSTRA targets ===================================
+    std::optional<PathResult> dijkstra_targets(
         unswbc::Position here,
-        const std::vector<
-            std::pair<unswbc::Position, int>
-        >& targets,
-
+        const std::vector<std::pair<unswbc::Position, int>>& targets,
         SearchMode mode,
-
-        const std::unordered_set<
-            unswbc::Position,
-            unswbc::PositionHash
-        >& fatal_zone,
-
-        const std::unordered_set<
-            unswbc::Position,
-            unswbc::PositionHash
-        >& safe_zone,
-
-        const std::unordered_set<
-            unswbc::Position,
-            unswbc::PositionHash
-        >& blocked,
-
+        const std::unordered_set<unswbc::Position, unswbc::PositionHash>& fatal_zone,
+        const std::unordered_set<unswbc::Position, unswbc::PositionHash>& safe_zone,
+        const std::unordered_set<unswbc::Position, unswbc::PositionHash>& blocked,
         int cap,
         double* deadline,
         int round_num
@@ -536,31 +520,21 @@ namespace Search {
         struct Parent {
             unswbc::Position previous;
             unswbc::Direction direction;
+
             Parent(
                 unswbc::Position previous,
                 unswbc::Direction direction
             )
-                :previous(previous),
+                : previous(previous),
                 direction(direction)
             {}
         };
 
-        // ------------------------------------------------------------
-        // Target lookup
-        // ------------------------------------------------------------
-
-        std::unordered_map<
-            unswbc::Position,
-            int,
-            unswbc::PositionHash
-        > target_penalty;
+        std::unordered_map<unswbc::Position, int, unswbc::PositionHash> target_penalty;
 
         for (const auto& [position, penalty] : targets) {
-
             auto it = target_penalty.find(position);
 
-            // If duplicate positions somehow occur, keep
-            // the smaller penalty.
             if (it == target_penalty.end()) {
                 target_penalty[position] = penalty;
             } else {
@@ -568,21 +542,13 @@ namespace Search {
             }
         }
 
-        // ------------------------------------------------------------
-        // Dijkstra state
-        // ------------------------------------------------------------
-
         std::priority_queue<
             AStarNode,
             std::vector<AStarNode>,
             std::greater<AStarNode>
         > open;
 
-        std::unordered_map<
-            unswbc::Position,
-            int,
-            unswbc::PositionHash
-        > distance;
+        std::unordered_map<unswbc::Position, int, unswbc::PositionHash> distance;
 
         std::unordered_map<
             unswbc::Position,
@@ -590,95 +556,72 @@ namespace Search {
             unswbc::PositionHash
         > came_from;
 
-        std::unordered_set<
-            unswbc::Position,
-            unswbc::PositionHash
-        > visited;
+        std::unordered_set<unswbc::Position, unswbc::PositionHash> visited;
 
         int counter = 0;
 
         distance[here] = 0;
-
-        open.push({
-            0,      // f == g for Dijkstra
-            0,
-            counter++,
-            here
-        });
-
-        // ------------------------------------------------------------
-        // Best target found so far
-        // ------------------------------------------------------------
+        open.push({0, 0, counter++, here});
 
         int best_cost = INT_MAX;
-
         std::vector<unswbc::Position> best_targets;
-
-        // ------------------------------------------------------------
-        // Search
-        // ------------------------------------------------------------
 
         while (!open.empty()) {
 
+            // Deadline check
             if (deadline != nullptr) {
-                double now =
-                    std::chrono::duration<double>(
-                        std::chrono::steady_clock::now().time_since_epoch()
-                    ).count();
+                double now = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now().time_since_epoch()
+                ).count();
 
-                if (now >= *deadline){
+                if (now >= *deadline) {
                     break;
                 }
             }
+
             AStarNode current = open.top();
             open.pop();
 
-            // Already finalised
             if (visited.count(current.pos))
                 continue;
 
             visited.insert(current.pos);
 
-            // --------------------------------------------------------
-            // Target reached
-            // --------------------------------------------------------
+            // Best-cost early termination.
+            // Dijkstra pops nodes in non-decreasing g order.
+            // effective_cost = max(g, penalty) >= g.
+            if (best_cost != INT_MAX && current.g > best_cost) {
+                break;
+            }
 
-            auto target_it =
-                target_penalty.find(current.pos);
+            // Target reached
+            auto target_it = target_penalty.find(current.pos);
 
             if (target_it != target_penalty.end()) {
-
                 int effective_cost = std::max(
                     current.g,
                     target_it->second
                 );
 
                 if (effective_cost < best_cost) {
-
                     best_cost = effective_cost;
                     best_targets.clear();
                     best_targets.push_back(current.pos);
-
                 } else if (effective_cost == best_cost) {
-
                     best_targets.push_back(current.pos);
                 }
             }
 
-            // --------------------------------------------------------
-            // Search cap
-            // --------------------------------------------------------
-
-            if (static_cast<int>(visited.size()) >= cap){
+            // Cap check
+            if (static_cast<int>(visited.size()) >= cap) {
                 break;
             }
 
-            // --------------------------------------------------------
             // Expand neighbours
-            // --------------------------------------------------------
-
-            auto neighbours =
-                get_known_neighbors(current.pos, round_num);
+            auto neighbours = get_known_neighbors(
+                current.pos,
+                round_num
+            );
 
             for (const auto& neighbour : neighbours) {
 
@@ -701,8 +644,7 @@ namespace Search {
                 const int new_distance =
                     current.g + neighbour.cost;
 
-                auto distance_it =
-                    distance.find(next);
+                auto distance_it = distance.find(next);
 
                 if (distance_it != distance.end() &&
                     new_distance >= distance_it->second) {
@@ -720,44 +662,31 @@ namespace Search {
                 );
 
                 open.push({
-                    new_distance,   // f
-                    new_distance,   // g
+                    new_distance,
+                    new_distance,
                     counter++,
                     next
                 });
             }
         }
 
-        // ------------------------------------------------------------
-        // No reachable target
-        // ------------------------------------------------------------
-
-        if (best_targets.empty()){
+        if (best_targets.empty()) {
             return std::nullopt;
         }
 
-        // ------------------------------------------------------------
-        // For now, deterministic tie-breaking
-        // ------------------------------------------------------------
-
-        const auto selected_target =
-            best_targets.front();
-
-        // ------------------------------------------------------------
-        // Reconstruct path
-        // ------------------------------------------------------------
+        const auto selected_target = best_targets.front();
 
         PathResult result;
 
         result.target = selected_target;
         result.cost = best_cost;
 
+        // Reconstruct path
         auto current = selected_target;
 
         while (current != here) {
 
-            auto parent_it =
-                came_from.find(current);
+            auto parent_it = came_from.find(current);
 
             if (parent_it == came_from.end()) {
                 return std::nullopt;
@@ -765,13 +694,8 @@ namespace Search {
 
             const auto& parent = parent_it->second;
 
-            result.directions.push_back(
-                parent.direction
-            );
-
-            result.positions.push_back(
-                current
-            );
+            result.directions.push_back(parent.direction);
+            result.positions.push_back(current);
 
             current = parent.previous;
         }
