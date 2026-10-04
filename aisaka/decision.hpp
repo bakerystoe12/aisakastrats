@@ -403,30 +403,33 @@ namespace Decision{
                 ? Search::SearchMode::AGGRESSIVE
                 : Search::SearchMode::SAFE;
 
-        // Turn-local blocked set
-        std::unordered_set<
-            unswbc::Position,
-            unswbc::PositionHash
-        > blocked;
+        int moves_this_turn = (unswbc::ct->get_length() + 3) / 4;
 
-
-        auto path = Search::dijkstra_targets(
-            here,
-            targets,
-            mode,
-            fatal_zone,
-            safe_zone,
-            blocked,
-            State::BFS_CAP,
-            deadline,
-            round_num
-        );
+        auto path = Search::find_valid_path(
+            here, 
+            targets, 
+            mode, 
+            fatal_zone, 
+            safe_zone, 
+            State::BFS_CAP, 
+            deadline, 
+            round_num, 
+            moves_this_turn, 
+            others);
         
         if (!path.has_value()) {
-            // to do
+            for (auto d :unswbc::Direction::get_direction_list()) {
+
+                auto nxt =
+                    Search::open_step(here, d);
+
+                if (nxt.has_value()) {
+                    unswbc::ct->make_move(d);
+                }
+            }
             return;
         }
-        
+
         execute_path(*path);
     }
 } // decision closer

@@ -1529,8 +1529,4 @@ namespace Search {
 
         return std::nullopt;
     }
-
-    /*
-     TO DO: DEAD END DETECTION + CONSIDER BLOCKING IN ALLIES
-    */
 } // search namespace closer

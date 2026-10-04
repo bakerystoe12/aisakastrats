@@ -418,11 +418,6 @@ namespace Decision{
             return;
         }
 
-        if (targets.empty()) {
-            last_resort(round_num, others);
-            return;
-        }
-
         auto fatal_zone = Search::build_fatal_zone(others);
         auto safe_zone = Search::build_safe_zone(others);
 
@@ -488,7 +483,15 @@ namespace Decision{
         }
 
         // Step 8: no validated route before the attempt/time budget expired.
-        last_resort(round_num, others);
-    }
+        for (auto d :
+            unswbc::Direction::get_direction_list()) {
 
+            auto nxt =
+                Search::open_step(here, d);
+
+            if (nxt.has_value()) {
+                unswbc::ct->make_move(d);
+            }
+        }
+    }
 } // decision closer

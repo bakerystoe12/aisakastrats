@@ -103,7 +103,8 @@ int main() {
             if (round_num < 100) State::AGGRESSIVE = true;
             if (id == 0 || id == 1){
                 State::AGGRESSIVE = false;
-                State::SAFE_DANGER_RADIUS = 5;
+                State::SAFE_DANGER_RADIUS = 2;
+                State::DEAD_END_PEARL_THRESHOLD = 999;
                 State::IS_QUEEN = true;
             }
         }

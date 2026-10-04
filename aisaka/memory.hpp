@@ -334,28 +334,24 @@ namespace Memory {
         auto it =
             State::_OCCUPIED_CACHE.find(pos);
 
-        if (
-            it != State::_OCCUPIED_CACHE.end()
-        ) {
+        if (it != State::_OCCUPIED_CACHE.end()) {
             return it->second;
         }
 
-        bool result = false;
+        bool result =
+            State::OWN_BODY_SET.count(pos) > 0;
 
-        auto* tile =
-            unswbc::ct->get_tile(pos);
+        if (!result) {
+            auto* tile =
+                unswbc::ct->get_tile(pos);
 
-        if (tile) {
-            result =
-                (tile->get_dragon() != nullptr);
+            if (tile) {
+                result =
+                    (tile->get_dragon() != nullptr);
+            }
         }
-        else {
-            result =
-                State::OWN_BODY_SET.count(pos);
-        }
 
-        State::_OCCUPIED_CACHE[pos] =
-            result;
+        State::_OCCUPIED_CACHE[pos] = result;
 
         return result;
     }

@@ -29,6 +29,16 @@ namespace Search {
         AGGRESSIVE
     };  
 
+    struct PathValidationResult {
+        bool valid = true;
+        std::optional<unswbc::Position> bad_node;
+    };
+
+    struct DeadEndResult {
+        bool is_dead_end = false;
+        int pearl_count = 0;
+    };
+
     struct SearchNeighbor {
     unswbc::Position position;
     unswbc::Position from;
@@ -914,7 +924,565 @@ namespace Search {
         return std::nullopt;
     }
 
-    /*
-     TO DO: DEAD END DETECTION + CONSIDER BLOCKING IN ALLIES
-    */
+    // ============================================================================
+    // PATH VALIDATION
+    // ============================================================================
+
+    // ---------------------------------------------------------------------------
+    // Get physical neighbours.
+    //
+    // This deliberately ignores strategic validation rules such as:
+    // - SAFE / AGGRESSIVE mode
+    // - enemy danger zones
+    // - target preference
+    // - dead ends
+    // - ally blocking
+    //
+    // It answers only:
+    // "Where can I physically move from this position?"
+    //
+    // KELP       -> cannot move
+    // EMPTY      -> move to adjacent tile
+    // PORTAL     -> move through portal to its destination
+    // occupied   -> cannot move there
+    // ---------------------------------------------------------------------------
+
+    std::vector<unswbc::Position> get_physical_neighbors(
+        const unswbc::Position& pos,
+        int round_num
+    ) {
+        std::vector<unswbc::Position> result;
+
+        for (const auto& direction :
+            unswbc::Direction::get_direction_list()) {
+
+            unswbc::EdgeType edge =
+                Memory::known_edge_type(pos, direction);
+
+            // Cannot move through kelp.
+            if (edge == unswbc::EdgeType::KELP)
+                continue;
+
+            // ---------------------------------------------------------------
+            // Normal movement
+            // ---------------------------------------------------------------
+            if (edge == unswbc::EdgeType::EMPTY) {
+
+                unswbc::Position next =
+                    pos.add_dir(direction);
+
+                // Known occupied tile cannot be entered.
+                if (Memory::known_occupied(next))
+                    continue;
+
+                result.push_back(next);
+            }
+
+            // ---------------------------------------------------------------
+            // Portal movement
+            // ---------------------------------------------------------------
+            else if (edge == unswbc::EdgeType::PORTAL) {
+
+                unswbc::Position destination;
+
+                if (!get_portal_destination(
+                        pos,
+                        direction,
+                        destination)) {
+                    continue;
+                }
+
+                // Check the actual portal destination,
+                // not the tile immediately beside the portal.
+                if (Memory::known_occupied(destination))
+                    continue;
+
+                result.push_back(destination);
+            }
+        }
+
+        return result;
+    }
+
+
+    // ---------------------------------------------------------------------------
+    // Count pearls inside a dead-end pocket.
+    //
+    // The important distinction here is that we do NOT only count pearls
+    // directly along the planned path.
+    //
+    // Once a dead-end pocket is identified, we flood-fill the physically
+    // reachable pocket and count all known pearls inside it.
+    //
+    // This is used to allow entering a dead end if the pocket contains
+    // enough pearls to make the commitment worthwhile.
+    // ---------------------------------------------------------------------------
+
+    int count_pocket_pearls(
+        const unswbc::Position& entry,
+        const unswbc::Position& previous,
+        int round_num
+    ) {
+        std::deque<unswbc::Position> queue;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > seen;
+
+        queue.push_back(entry);
+        seen.insert(entry);
+
+        int pearl_count = 0;
+
+        while (!queue.empty()) {
+
+            unswbc::Position current =
+                queue.front();
+
+            queue.pop_front();
+
+            // ---------------------------------------------------------------
+            // Count known pearl at this position.
+            // ---------------------------------------------------------------
+            auto pearl_it =
+                State::PEARL_MEMORY.find(current);
+
+            if (pearl_it != State::PEARL_MEMORY.end()) {
+
+                const auto& pearl =
+                    pearl_it->second;
+
+                // pearl_time == -1 means this position does not have
+                // a pearl that will spawn.
+                if (pearl.has_pearl &&
+                    pearl.pearl_time != -1) {
+
+                    ++pearl_count;
+                }
+            }
+
+            // ---------------------------------------------------------------
+            // Expand through physical space.
+            // ---------------------------------------------------------------
+            std::vector<unswbc::Position> neighbours =
+                get_physical_neighbors(
+                    current,
+                    round_num
+                );
+
+            for (const auto& next : neighbours) {
+
+                // Do not immediately walk back out through the
+                // entrance of the pocket.
+                if (next == previous)
+                    continue;
+
+                if (seen.contains(next))
+                    continue;
+
+                seen.insert(next);
+                queue.push_back(next);
+            }
+        }
+
+        return pearl_count;
+    }
+
+
+    // ---------------------------------------------------------------------------
+    // Analyse whether entering `entry` commits us to a dead end.
+    //
+    // We only look ahead a short distance.
+    //
+    // Example:
+    //
+    //      previous
+    //          |
+    //          v
+    //       entry
+    //          |
+    //          v
+    //          A
+    //          |
+    //          v
+    //          B
+    //          |
+    //          v
+    //        DEAD END
+    //
+    // If every step is forced for DEAD_END_LOOKAHEAD steps and eventually
+    // there are no exits, we treat it as a dead-end commitment.
+    //
+    // If the pocket contains enough pearls, the dead end can still be worth
+    // entering.
+    // ---------------------------------------------------------------------------
+
+    DeadEndResult analyze_dead_end(
+        const unswbc::Position& entry,
+        const unswbc::Position& previous,
+        int round_num
+    ) {
+        unswbc::Position current = entry;
+        unswbc::Position came_from = previous;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > seen;
+
+        seen.insert(current);
+
+        for (int depth = 0;
+            depth < State::DEAD_END_LOOKAHEAD;
+            ++depth) {
+
+            std::vector<unswbc::Position> neighbours =
+                get_physical_neighbors(
+                    current,
+                    round_num
+                );
+
+            // ---------------------------------------------------------------
+            // We are only interested in exits other than the position
+            // we just came from.
+            // ---------------------------------------------------------------
+            neighbours.erase(
+                std::remove(
+                    neighbours.begin(),
+                    neighbours.end(),
+                    came_from
+                ),
+                neighbours.end()
+            );
+
+            // ---------------------------------------------------------------
+            // No forward exit -> genuine dead end.
+            // ---------------------------------------------------------------
+            if (neighbours.empty()) {
+
+                int pearl_count =
+                    count_pocket_pearls(
+                        entry,
+                        previous,
+                        round_num
+                    );
+
+                return {
+                    true,
+                    pearl_count
+                };
+            }
+
+            // ---------------------------------------------------------------
+            // More than one possible forward exit means this isn't a
+            // forced corridor anymore.
+            // ---------------------------------------------------------------
+            if (neighbours.size() > 1) {
+                return {
+                    false,
+                    0
+                };
+            }
+
+            // ---------------------------------------------------------------
+            // Exactly one forward option.
+            // Continue following the forced corridor.
+            // ---------------------------------------------------------------
+            unswbc::Position next =
+                neighbours.front();
+
+            // A cycle means we are not dealing with a dead end.
+            if (seen.contains(next)) {
+                return {
+                    false,
+                    0
+                };
+            }
+
+            seen.insert(next);
+
+            came_from = current;
+            current = next;
+        }
+
+        // We did not encounter a dead end within the lookahead.
+        return {
+            false,
+            0
+        };
+    }
+
+
+    // ---------------------------------------------------------------------------
+    // Check whether entering `node` would block an ally.
+    //
+    // `others` comes directly from main.cpp:
+    //
+    //     auto others = other_dragon_parts(tiles);
+    //
+    // This function filters that list to teammates only.
+    //
+    // We only reject the move when:
+    //
+    //     1. the dragon is an ally
+    //     2. node is one of its physical exits
+    //     3. node is its ONLY physical exit
+    //
+    // This deliberately does NOT try to simulate every dragon's future
+    // movement. It is simply a local "don't take your teammate's only exit"
+    // check.
+    // ---------------------------------------------------------------------------
+
+    bool blocks_ally(
+        const unswbc::Position& node,
+        const std::vector<unswbc::DragonPart*>& others,
+        int round_num
+    ) {
+        for (const auto* dragon : others) {
+
+            if (!dragon)
+                continue;
+
+            // Ignore enemies.
+            if (dragon->get_team() != unswbc::ct->get_team())
+                continue;
+
+            unswbc::Position ally_position =
+                dragon->get_position();
+
+            std::vector<unswbc::Position> exits =
+                get_physical_neighbors(
+                    ally_position,
+                    round_num
+                );
+
+            // Is our candidate node one of the ally's exits?
+            bool uses_node =
+                std::find(
+                    exits.begin(),
+                    exits.end(),
+                    node
+                ) != exits.end();
+
+            if (!uses_node)
+                continue;
+
+            // If this is their only known physical exit,
+            // entering it would block them.
+            if (exits.size() == 1)
+                return true;
+        }
+
+        return false;
+    }
+
+
+    // ---------------------------------------------------------------------------
+    // Validate only the portion of the path that the dragon will actually
+    // execute THIS TURN.
+    //
+    // The caller should calculate:
+    //
+    //     moves_this_turn = ceil(length / 4)
+    //
+    // and pass that value here.
+    //
+    // For example:
+    //
+    //     length = 3  -> 1 move
+    //     length = 4  -> 1 move
+    //     length = 5  -> 2 moves
+    //     length = 8  -> 2 moves
+    //     length = 20 -> 5 moves
+    //
+    // We do NOT validate the entire future path because the world state can
+    // change before those future moves are actually executed.
+    //
+    // If something is wrong, return the FIRST bad node.
+    //
+    // The caller is then responsible for:
+    //
+    //     block bad node
+    //     rerun Dijkstra
+    //     validate again
+    // ---------------------------------------------------------------------------
+
+    PathValidationResult validate_path(
+        const PathResult& path,
+        int moves_this_turn,
+        int round_num,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        // Nothing to validate.
+        if (path.positions.empty())
+            return {};
+
+        int moves_to_validate =
+            std::min(
+                moves_this_turn,
+                static_cast<int>(
+                    path.positions.size()
+                )
+            );
+
+        // PathResult::positions contains destination positions only.
+        //
+        // Therefore the first `previous` position is our current head.
+        unswbc::Position previous =
+            unswbc::ct->get_position();
+
+        for (int i = 0;
+            i < moves_to_validate;
+            ++i) {
+
+            const unswbc::Position& node =
+                path.positions[i];
+
+            // ---------------------------------------------------------------
+            // 1. Dead-end validation
+            // ---------------------------------------------------------------
+            DeadEndResult dead_end =
+                analyze_dead_end(
+                    node,
+                    previous,
+                    round_num
+                );
+
+            if (dead_end.is_dead_end &&
+                dead_end.pearl_count <=
+                    State::DEAD_END_PEARL_THRESHOLD) {
+
+                return {
+                    false,
+                    node
+                };
+            }
+
+            // ---------------------------------------------------------------
+            // 2. Ally blocking validation
+            // ---------------------------------------------------------------
+            if (blocks_ally(
+                    node,
+                    others,
+                    round_num)) {
+
+                return {
+                    false,
+                    node
+                };
+            }
+
+            // This node passed validation.
+            previous = node;
+        }
+
+        return {};
+    }
+
+
+    std::optional<PathResult> find_valid_path(
+        unswbc::Position here,
+        const std::vector<std::pair<unswbc::Position, int>>& targets,
+        SearchMode mode,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& fatal_zone,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& safe_zone,
+        int cap,
+        double* deadline,
+        int round_num,
+        int moves_this_turn,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        // Nodes rejected by path validation during this search.
+        //
+        // This is temporary. It only exists for the current attempt
+        // to find a valid path.
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > blocked;
+
+        while (true) {
+
+            // ---------------------------------------------------------------
+            // Check the deadline before starting another Dijkstra search.
+            // ---------------------------------------------------------------
+            if (deadline != nullptr) {
+
+                double now =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now()
+                            .time_since_epoch()
+                    ).count();
+
+                if (now >= *deadline)
+                    return std::nullopt;
+            }
+
+            // ---------------------------------------------------------------
+            // Find the best path while avoiding:
+            //
+            //   - normal invalid transitions
+            //   - fatal/safe zones
+            //   - nodes rejected by previous validation attempts
+            // ---------------------------------------------------------------
+            auto path = dijkstra_targets(
+                here,
+                targets,
+                mode,
+                fatal_zone,
+                safe_zone,
+                blocked,
+                cap,
+                deadline,
+                round_num
+            );
+
+            // No preferred path exists.
+            if (!path.has_value())
+                return std::nullopt;
+
+            // ---------------------------------------------------------------
+            // Validate only the part of the path that will actually be
+            // executed during this turn.
+            // ---------------------------------------------------------------
+            PathValidationResult validation =
+                validate_path(
+                    *path,
+                    moves_this_turn,
+                    round_num,
+                    others
+                );
+
+            // ---------------------------------------------------------------
+            // The path is valid.
+            // ---------------------------------------------------------------
+            if (validation.valid)
+                return path;
+
+            // ---------------------------------------------------------------
+            // Invalid path but no offending node.
+            //
+            // This should not normally happen because validate_path()
+            // returns the first bad node whenever valid == false.
+            // ---------------------------------------------------------------
+            if (!validation.bad_node.has_value())
+                return std::nullopt;
+
+            // ---------------------------------------------------------------
+            // Reject the offending node and rerun Dijkstra.
+            // ---------------------------------------------------------------
+            blocked.insert(
+                *validation.bad_node
+            );
+        }
+
+        return std::nullopt;
+    }
 } // search namespace closer
