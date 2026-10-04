@@ -723,6 +723,242 @@ namespace Search {
         return result;
     }
 
+    std::optional<PathResult> find_physical_path(
+        unswbc::Position here,
+        const std::vector<std::pair<unswbc::Position, int>>& targets,
+        const std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        >& blocked,
+        int cap,
+        double* deadline,
+        int round_num
+    ) {
+        if (targets.empty())
+            return std::nullopt;
+
+        struct Parent {
+            unswbc::Position previous;
+            unswbc::Direction direction;
+
+            Parent(
+                unswbc::Position previous,
+                unswbc::Direction direction
+            )
+                : previous(previous),
+                direction(direction)
+            {}
+        };
+
+        std::unordered_map<
+            unswbc::Position,
+            int,
+            unswbc::PositionHash
+        > target_penalty;
+
+        for (const auto& [position, penalty] : targets) {
+            auto it = target_penalty.find(position);
+
+            if (it == target_penalty.end()) {
+                target_penalty[position] = penalty;
+            }
+            else {
+                it->second = std::min(
+                    it->second,
+                    penalty
+                );
+            }
+        }
+
+        std::priority_queue<
+            AStarNode,
+            std::vector<AStarNode>,
+            std::greater<AStarNode>
+        > open;
+
+        std::unordered_map<
+            unswbc::Position,
+            int,
+            unswbc::PositionHash
+        > distance;
+
+        std::unordered_map<
+            unswbc::Position,
+            Parent,
+            unswbc::PositionHash
+        > came_from;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > visited;
+
+        int counter = 0;
+
+        distance[here] = 0;
+
+        open.push({
+            0,
+            0,
+            counter++,
+            here
+        });
+
+        int best_cost = INT_MAX;
+
+        std::vector<unswbc::Position> best_targets;
+
+        while (!open.empty()) {
+
+            if (deadline != nullptr) {
+                double now =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now()
+                            .time_since_epoch()
+                    ).count();
+
+                if (now >= *deadline)
+                    break;
+            }
+
+            AStarNode current = open.top();
+            open.pop();
+
+            if (visited.count(current.pos))
+                continue;
+
+            visited.insert(current.pos);
+
+            if (best_cost != INT_MAX &&
+                current.g > best_cost) {
+                break;
+            }
+
+            auto target_it =
+                target_penalty.find(current.pos);
+
+            if (target_it != target_penalty.end()) {
+
+                int effective_cost =
+                    std::max(
+                        current.g,
+                        target_it->second
+                    );
+
+                if (effective_cost < best_cost) {
+                    best_cost = effective_cost;
+                    best_targets.clear();
+                    best_targets.push_back(current.pos);
+                }
+                else if (effective_cost == best_cost) {
+                    best_targets.push_back(current.pos);
+                }
+            }
+
+            if (static_cast<int>(visited.size()) >= cap)
+                break;
+
+            auto neighbours =
+                get_known_neighbors(
+                    current.pos,
+                    round_num
+                );
+
+            for (const auto& neighbour : neighbours) {
+
+                if (Memory::known_occupied(
+                        neighbour.position)) {
+                    continue;
+                }
+
+                // Reject nodes blocked by previous validation attempts.
+                if (blocked.count(neighbour.position))
+                    continue;
+
+                const auto next =
+                    neighbour.position;
+
+                if (visited.count(next))
+                    continue;
+
+                const int new_distance =
+                    current.g + neighbour.cost;
+
+                auto distance_it =
+                    distance.find(next);
+
+                if (distance_it != distance.end() &&
+                    new_distance >= distance_it->second) {
+                    continue;
+                }
+
+                distance[next] = new_distance;
+
+                came_from.insert_or_assign(
+                    next,
+                    Parent{
+                        current.pos,
+                        neighbour.direction
+                    }
+                );
+
+                open.push({
+                    new_distance,
+                    new_distance,
+                    counter++,
+                    next
+                });
+            }
+        }
+
+        if (best_targets.empty())
+            return std::nullopt;
+
+        const auto selected_target =
+            best_targets.front();
+
+        PathResult result;
+
+        result.target = selected_target;
+        result.cost = best_cost;
+
+        auto current = selected_target;
+
+        while (current != here) {
+
+            auto parent_it =
+                came_from.find(current);
+
+            if (parent_it == came_from.end())
+                return std::nullopt;
+
+            const auto& parent =
+                parent_it->second;
+
+            result.directions.push_back(
+                parent.direction
+            );
+
+            result.positions.push_back(
+                current
+            );
+
+            current = parent.previous;
+        }
+
+        std::reverse(
+            result.directions.begin(),
+            result.directions.end()
+        );
+
+        std::reverse(
+            result.positions.begin(),
+            result.positions.end()
+        );
+
+        return result;
+    }
+
 
     /* ============================================================
        PATHFINDING IF WE SEE NO PEARLS: nearest_unexplored
@@ -922,6 +1158,231 @@ namespace Search {
         }
 
         return std::nullopt;
+    }
+
+    std::vector<std::pair<unswbc::Position, int>> get_frontier_targets(
+        unswbc::Position start,
+        int round_num
+    ) {
+        struct Node {
+            unswbc::Position pos;
+            int distance;
+        };
+
+        std::vector<std::pair<unswbc::Position, int>> candidates;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > added;
+
+        /*
+        * First pass:
+        * Search locally for visible-but-unvisited frontier tiles.
+        */
+        constexpr int LOCAL_SEARCH_DEPTH = 3;
+
+        std::deque<Node> local_queue;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > local_seen;
+
+        local_queue.push_back({start, 0});
+        local_seen.insert(start);
+
+        struct FrontierCandidate {
+            unswbc::Position pos;
+            int distance;
+            int frontier_score;
+        };
+
+        std::vector<FrontierCandidate> local_candidates;
+
+        while (!local_queue.empty()) {
+
+            Node current = local_queue.front();
+            local_queue.pop_front();
+
+            if (current.distance >= LOCAL_SEARCH_DEPTH)
+                continue;
+
+            for (const auto& neighbour :
+                get_neighbors(current.pos, round_num)) {
+
+                unswbc::Position nxt = neighbour.position;
+
+                if (local_seen.count(nxt))
+                    continue;
+
+                local_seen.insert(nxt);
+
+                if (Memory::known_occupied(nxt))
+                    continue;
+
+                int next_distance =
+                    current.distance + neighbour.cost;
+
+                if (!State::EXPLORATION_VISITED.count(nxt)) {
+
+                    int frontier_score = 0;
+
+                    for (auto direction :
+                        unswbc::Direction::get_direction_list()) {
+
+                        if (Memory::known_edge_type(nxt, direction) ==
+                            unswbc::EdgeType::KELP) {
+                            continue;
+                        }
+
+                        unswbc::Position beyond =
+                            nxt.add_dir(direction);
+
+                        if (Memory::known_occupied(beyond))
+                            continue;
+
+                        if (!tile_ever_seen(beyond)) {
+                            frontier_score += 10;
+                        }
+                        else if (!State::EXPLORATION_VISITED.count(beyond)) {
+                            frontier_score += 1;
+                        }
+                    }
+
+                    if (frontier_score > 0) {
+                        local_candidates.push_back({
+                            nxt,
+                            next_distance,
+                            frontier_score
+                        });
+                    }
+                }
+
+                if (tile_ever_seen(nxt)) {
+                    local_queue.push_back({
+                        nxt,
+                        next_distance
+                    });
+                }
+            }
+        }
+
+        /*
+        * Sort local candidates:
+        *
+        * 1. Stronger frontier
+        * 2. Shorter distance
+        */
+        std::sort(
+            local_candidates.begin(),
+            local_candidates.end(),
+            [](const FrontierCandidate& a,
+            const FrontierCandidate& b) {
+
+                if (a.frontier_score != b.frontier_score)
+                    return a.frontier_score > b.frontier_score;
+
+                return a.distance < b.distance;
+            }
+        );
+
+        /*
+        * Add local candidates first.
+        */
+        for (const auto& candidate : local_candidates) {
+
+            if (static_cast<int>(candidates.size()) >=
+                State::MAX_FRONTIER_TARGETS) {
+                break;
+            }
+
+            if (added.insert(candidate.pos).second) {
+                candidates.push_back({
+                    candidate.pos,
+                    0
+                });
+            }
+        }
+
+        /*
+        * Second pass:
+        * Search more broadly for genuinely unseen territory.
+        */
+        if (static_cast<int>(candidates.size()) <
+            State::MAX_FRONTIER_TARGETS) {
+
+            std::deque<Node> queue;
+
+            std::unordered_set<
+                unswbc::Position,
+                unswbc::PositionHash
+            > seen;
+
+            queue.push_back({start, 0});
+            seen.insert(start);
+
+            int expanded = 0;
+
+            while (!queue.empty() &&
+                expanded < State::UNEXPLORED_BFS_CAP &&
+                static_cast<int>(candidates.size()) <
+                    State::MAX_FRONTIER_TARGETS) {
+
+                Node current = queue.front();
+                queue.pop_front();
+
+                ++expanded;
+
+                for (const auto& neighbour :
+                    get_neighbors(current.pos, round_num)) {
+
+                    unswbc::Position nxt =
+                        neighbour.position;
+
+                    if (seen.count(nxt))
+                        continue;
+
+                    seen.insert(nxt);
+
+                    if (Memory::known_occupied(nxt))
+                        continue;
+
+                    if (State::EXPLORATION_VISITED.count(nxt))
+                        continue;
+
+                    /*
+                    * Completely unseen territory.
+                    */
+                    if (!tile_ever_seen(nxt)) {
+
+                        if (added.insert(nxt).second) {
+                            candidates.push_back({
+                                nxt,
+                                0
+                            });
+                        }
+
+                        if (static_cast<int>(candidates.size()) >=
+                            State::MAX_FRONTIER_TARGETS) {
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    /*
+                    * Continue searching through known territory.
+                    */
+                    queue.push_back({
+                        nxt,
+                        current.distance + neighbour.cost
+                    });
+                }
+            }
+        }
+
+        return candidates;
     }
 
     // ============================================================================
@@ -1459,13 +1920,13 @@ namespace Search {
                     round_num,
                     others
                 );
-
+            
             // ---------------------------------------------------------------
             // The path is valid.
             // ---------------------------------------------------------------
             if (validation.valid)
                 return path;
-
+                
             // ---------------------------------------------------------------
             // Invalid path but no offending node.
             //
@@ -1484,5 +1945,190 @@ namespace Search {
         }
 
         return std::nullopt;
+    }
+
+    std::optional<PathResult> find_valid_physical_path(
+        unswbc::Position here,
+        const std::vector<std::pair<unswbc::Position, int>>& targets,
+        int cap,
+        double* deadline,
+        int round_num,
+        int moves_this_turn,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > blocked;
+
+        while (true) {
+
+            if (deadline != nullptr) {
+                double now =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now()
+                            .time_since_epoch()
+                    ).count();
+
+                if (now >= *deadline)
+                    return std::nullopt;
+            }
+
+            auto path = find_physical_path(
+                here,
+                targets,
+                blocked,
+                cap,
+                deadline,
+                round_num
+            );
+
+            if (!path.has_value())
+                return std::nullopt;
+
+            PathValidationResult validation =
+                validate_path(
+                    *path,
+                    moves_this_turn,
+                    round_num,
+                    others
+                );
+
+            if (validation.valid)
+                return path;
+
+            if (!validation.bad_node.has_value())
+                return std::nullopt;
+
+            blocked.insert(
+                *validation.bad_node
+            );
+        }
+
+        return std::nullopt;
+    }
+    
+    std::optional<unswbc::Direction> choose_emergency_move(
+        unswbc::Position here,
+        int round_num,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        std::vector<std::pair<
+            unswbc::Direction,
+            unswbc::Position
+        >> candidates;
+
+        for (const auto& direction :
+            unswbc::Direction::get_direction_list()) {
+
+            unswbc::EdgeType edge =
+                Memory::known_edge_type(here, direction);
+
+            if (edge == unswbc::EdgeType::KELP)
+                continue;
+
+            unswbc::Position next;
+
+            // Normal movement.
+            if (edge == unswbc::EdgeType::EMPTY) {
+                next = here.add_dir(direction);
+            }
+
+            // Portal movement.
+            else if (edge == unswbc::EdgeType::PORTAL) {
+                if (!get_portal_destination(
+                        here,
+                        direction,
+                        next)) {
+                    continue;
+                }
+
+                // Respect portal cooldown.
+                auto edge_key =
+                    Memory::edge_key(here, direction);
+
+                auto portal_it =
+                    State::PORTAL_EDGES.find(edge_key);
+
+                if (portal_it == State::PORTAL_EDGES.end())
+                    continue;
+
+                int portal_id = portal_it->second;
+
+                int cooldown =
+                    unswbc::ct->get_length();
+
+                if (portal_id == State::LAST_PORTAL_ID &&
+                    round_num - State::LAST_PORTAL_ROUND <
+                        cooldown) {
+                    continue;
+                }
+            }
+
+            else {
+                continue;
+            }
+
+            // Never move into known occupied space.
+            if (Memory::known_occupied(next))
+                continue;
+
+            // Reject dead ends that aren't worth entering.
+            DeadEndResult dead_end =
+                analyze_dead_end(
+                    next,
+                    here,
+                    round_num
+                );
+
+            if (dead_end.is_dead_end &&
+                dead_end.pearl_count <=
+                    State::DEAD_END_PEARL_THRESHOLD) {
+                continue;
+            }
+
+            // Don't immediately block an ally.
+            if (blocks_ally(
+                    next,
+                    others,
+                    round_num)) {
+                continue;
+            }
+
+            candidates.push_back({
+                direction,
+                next
+            });
+        }
+
+        if (candidates.empty())
+            return std::nullopt;
+
+        // Prefer the move that leaves the most physical mobility.
+        int best_score = -1;
+        std::optional<unswbc::Direction> best_move;
+
+        for (const auto& [direction, next] : candidates) {
+
+            auto exits =
+                get_physical_neighbors(
+                    next,
+                    round_num
+                );
+
+            int score =
+                static_cast<int>(exits.size()) * 10;
+
+            // Prefer unexplored territory.
+            if (!State::EXPLORATION_VISITED.count(next))
+                score += 5;
+
+            if (score > best_score) {
+                best_score = score;
+                best_move = direction;
+            }
+        }
+
+        return best_move;
     }
 } // search namespace closer

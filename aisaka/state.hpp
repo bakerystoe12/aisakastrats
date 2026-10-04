@@ -22,6 +22,8 @@ namespace State {
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;
     inline int SAFE_DANGER_RADIUS = 2;
 
+    inline constexpr int MAX_FRONTIER_TARGETS = 5;
+
     inline std::unordered_set<
         unswbc::Position,
         unswbc::PositionHash
@@ -31,7 +33,7 @@ namespace State {
     inline const int PEARL_SPAWN_HORIZON = 10;
     inline const int SPLIT_MIN_LENGTH = 4;
 
-    inline constexpr int DEAD_END_LOOKAHEAD = 8;
+    inline constexpr int DEAD_END_LOOKAHEAD = 16;
     inline int DEAD_END_PEARL_THRESHOLD = 2;
 
     inline std::deque<unswbc::Position> OWN_BODY;

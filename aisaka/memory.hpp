@@ -392,6 +392,43 @@ namespace Memory {
         }
     }
 
+    void predict_own_body(
+        const std::vector<unswbc::Position>& positions,
+        int length
+    ) {
+        int predicted_length = length;
+
+        for (const auto& pos : positions) {
+
+            State::OWN_BODY.push_front(pos);
+
+            auto pearl_it = State::PEARL_MEMORY.find(pos);
+
+            if (
+                pearl_it != State::PEARL_MEMORY.end() &&
+                pearl_it->second.has_pearl &&
+                pearl_it->second.pearl_time != -1
+            ) {
+                ++predicted_length;
+
+                pearl_it->second.has_pearl = false;
+            }
+
+            while (
+                State::OWN_BODY.size()
+                > static_cast<size_t>(predicted_length)
+            ) {
+                State::OWN_BODY.pop_back();
+            }
+        }
+
+        State::OWN_BODY_SET.clear();
+
+        for (const auto& pos : State::OWN_BODY) {
+            State::OWN_BODY_SET.insert(pos);
+        }
+    }
+
     // ------------------------------------------------------------------------
     // PORTAL SONAR ENCODING
     //

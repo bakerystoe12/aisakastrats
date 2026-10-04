@@ -307,6 +307,16 @@ namespace Decision{
             path.directions.begin() + moves
         );
 
+        std::vector<unswbc::Position> positions(
+            path.positions.begin(),
+            path.positions.begin() + moves
+        );
+
+        Memory::predict_own_body(
+            positions,
+            length
+        );
+
         unswbc::ct->make_moves(directions);
     }
 
@@ -417,19 +427,79 @@ namespace Decision{
             moves_this_turn, 
             others);
         
-        if (!path.has_value()) {
-            for (auto d :unswbc::Direction::get_direction_list()) {
-
-                auto nxt =
-                    Search::open_step(here, d);
-
-                if (nxt.has_value()) {
-                    unswbc::ct->make_move(d);
-                }
-            }
+        if (path.has_value()) { // if it returns a path
+            execute_path(*path);
             return;
         }
 
-        execute_path(*path);
+        auto physical_path = Search::find_valid_physical_path(here, 
+            targets, 
+            State::BFS_CAP, 
+            deadline, 
+            round_num, 
+            moves_this_turn, 
+            others
+        );
+        
+        if(physical_path.has_value()){
+            execute_path(*physical_path);
+            return;
+        }
+
+        auto frontier_targets =
+            Search::get_frontier_targets(here, round_num);
+
+        auto frontier_path = Search::find_valid_path(
+            here,
+            frontier_targets,
+            mode,
+            fatal_zone,
+            safe_zone,
+            State::BFS_CAP,
+            deadline,
+            round_num,
+            moves_this_turn,
+            others
+        );
+
+        if (frontier_path.has_value()) {
+            execute_path(*frontier_path);
+            return;
+        }
+
+        auto frontier_physical_path =
+            Search::find_valid_physical_path(
+                here,
+                frontier_targets,
+                State::BFS_CAP,
+                deadline,
+                round_num,
+                moves_this_turn,
+                others
+            );
+
+        if (frontier_physical_path.has_value()) {
+            execute_path(*frontier_physical_path);
+            return;
+        }
+
+        auto emergency = Search::choose_emergency_move(here, round_num, others);
+
+        if (emergency.has_value()) {
+            unswbc::ct->make_move(
+                *emergency
+            );
+            return;
+        }
+
+        for (auto d :unswbc::Direction::get_direction_list()) {
+
+            auto nxt =
+                Search::open_step(here, d);
+
+            if (nxt.has_value()) {
+                unswbc::ct->make_move(d);
+            }
+        }
     }
 } // decision closer
