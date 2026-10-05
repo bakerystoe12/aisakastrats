@@ -31,7 +31,7 @@ namespace State {
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 4;
     inline const int PEARL_SPAWN_HORIZON = 10;
-    inline const int SPLIT_MIN_LENGTH = 4;
+    inline int SPLIT_MIN_LENGTH = 4;
 
     inline constexpr int DEAD_END_LOOKAHEAD = 16;
     inline int DEAD_END_PEARL_THRESHOLD = 2;

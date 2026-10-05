@@ -164,6 +164,10 @@ namespace Decision{
             return false;
         }
 
+        if (unswbc::game->get_round_num() > 400 && State::IS_QUEEN){
+            return false;
+        }
+        
         int length =
             unswbc::ct->get_length();
 
@@ -439,11 +443,6 @@ namespace Decision{
             moves_this_turn, 
             others
         );
-        
-        if(physical_path.has_value()){
-            execute_path(*physical_path);
-            return;
-        }
 
         auto frontier_targets =
             Search::get_frontier_targets(here, round_num);
@@ -463,6 +462,11 @@ namespace Decision{
 
         if (frontier_path.has_value()) {
             execute_path(*frontier_path);
+            return;
+        }
+
+        if(physical_path.has_value()){
+            execute_path(*physical_path);
             return;
         }
 

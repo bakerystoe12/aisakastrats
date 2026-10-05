@@ -70,7 +70,7 @@ void execute_turn() {
     if (Kamikaze::kamikaze_charge(others, deadline)) return;
     if (Kamikaze::kamikaze_dodge_split(others)) return;
 
-    if (round_num > 470 && !Decision::enemy_nearby(others) && round_num < 490 && State::IS_QUEEN != true) {
+    if (round_num > 440 && !Decision::enemy_nearby(others) && round_num < 490 && State::IS_QUEEN != true) {
         if (Decision::seppuku_conditions(others)) {
             Decision::suicide_bot();
             return;
@@ -79,6 +79,7 @@ void execute_turn() {
 
     if (round_num > 350){
         Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 0;
+        State::SPLIT_MIN_LENGTH = 7;
     }
     // choose direction theoretically should just do everything now
 
