@@ -160,7 +160,7 @@ namespace Decision{
     ========================================================*/
 
     bool try_split(const std::vector<unswbc::DragonPart*>& others) {
-        if (!State::AGGRESSIVE ||unswbc::ct->get_length() < State::SPLIT_MIN_LENGTH) {
+        if (State::IS_QUEEN == false && !State::AGGRESSIVE || unswbc::ct->get_length() < State::SPLIT_MIN_LENGTH) {
             return false;
         }
 
@@ -491,7 +491,7 @@ namespace Decision{
             return;
         }
 
-        for (auto d :unswbc::Direction::get_direction_list()) {
+        for (auto d :unswbc::Direction::get_direction_list()) {  // something more sophisticated for this
 
             auto nxt =
                 Search::open_step(here, d);

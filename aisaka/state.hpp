@@ -20,7 +20,7 @@ namespace State {
     inline const int UNEXPLORED_BFS_CAP = 500;
     inline const double TURN_TIME_BUDGET = 0.75;
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;
-    inline int SAFE_DANGER_RADIUS = 2;
+    inline int SAFE_DANGER_RADIUS = 4;
 
     inline constexpr int MAX_FRONTIER_TARGETS = 5;
 
