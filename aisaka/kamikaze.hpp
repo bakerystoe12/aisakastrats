@@ -159,7 +159,7 @@ namespace Kamikaze {
     }
 
     bool kamikaze_dodge_split(const std::vector<unswbc::DragonPart*>& others) {
-        if (State::AGGRESSIVE) return false;
+        if (State::AGGRESSIVE || State::IS_QUEEN) return false;
         if (!kamikaze_threat(others)) return false;
         int child = std::max(2, unswbc::ct->get_length() - 2);
         if (unswbc::ct->can_split(child)) {

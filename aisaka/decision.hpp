@@ -282,7 +282,7 @@ namespace Decision{
             auto nxt =
                 Search::open_step(here, d);
 
-            if (nxt.has_value()) {
+            if (nxt.has_value() && d != unswbc::ct->get_dir().get_opposite()) {
                 return true;
             }
         }
@@ -395,7 +395,6 @@ namespace Decision{
         double* deadline
     ){  
         unswbc::Position here = unswbc::ct->get_position();
-
         auto targets = get_targets(here,tiles,round_num);
 
         // auto target_positions = get_target_positions(targets);
@@ -497,7 +496,7 @@ namespace Decision{
             auto nxt =
                 Search::open_step(here, d);
 
-            if (nxt.has_value()) {
+            if (nxt.has_value() && d != unswbc::ct->get_dir().get_opposite()) {
                 unswbc::ct->make_move(d);
             }
         }
