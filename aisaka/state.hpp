@@ -33,7 +33,7 @@ namespace State {
     inline const int PEARL_SPAWN_HORIZON = 10;
     inline int SPLIT_MIN_LENGTH = 4;
 
-    inline constexpr int DEAD_END_LOOKAHEAD = 16;
+    inline constexpr int DEAD_END_LOOKAHEAD = 64;
     inline int DEAD_END_PEARL_THRESHOLD = 2;
 
     inline std::deque<unswbc::Position> OWN_BODY;
