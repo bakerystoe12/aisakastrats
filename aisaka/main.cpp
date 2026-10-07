@@ -102,9 +102,14 @@ int main() {
             State::AGGRESSIVE = stable_roll(unswbc::ct->get_id(), aggro_chance);
             rolled = true;
             if (round_num < 100) State::AGGRESSIVE = true;
+
+            if (State::AGGRESSIVE){
+                Search::DANGER_WEIGHT = 0;
+            }
+        
             if (id == 0 || id == 1){
                 State::AGGRESSIVE = false;
-                State::SAFE_DANGER_RADIUS = 2;
+                State::SAFE_DANGER_RADIUS = 5;
                 State::DEAD_END_PEARL_THRESHOLD = 999;
                 State::IS_QUEEN = true;
             }

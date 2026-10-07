@@ -214,7 +214,6 @@ namespace Decision{
 
         // No suitable pearl targets -> explore
         if (targets.empty()) {
-
             // Normal exploration
             auto frontier_target =
                 Search::nearest_unexplored(
@@ -293,18 +292,44 @@ namespace Decision{
         return false;
     }
 
-    void execute_path(const Search::PathResult& path) {
+    void execute_path(
+        const Search::PathResult& path,
+        const std::vector<unswbc::Tile>& tiles
+    ) {
         int length = unswbc::ct->get_length();
         int max_moves = (length + 3) / 4;
 
-        int moves = std::min(
-            max_moves,
-            static_cast<int>(path.directions.size())
-        );
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > visible;
 
-        if (moves <= 0){
-            return;
+        for (auto tile : tiles) {
+            visible.insert(tile.get_position());
         }
+
+        int moves = 0;
+
+        // Only execute moves that are:
+        // 1. within the sprint limit
+        // 2. present in the path
+        // 3. inside current vision
+        for (int i = 0; i < max_moves; ++i) {
+
+            if (i >= static_cast<int>(path.directions.size()))
+                break;
+
+            if (i >= static_cast<int>(path.positions.size()))
+                break;
+
+            if (!visible.count(path.positions[i]))
+                break;
+
+            ++moves;
+        }
+
+        if (moves <= 0)
+            return;
 
         std::vector<unswbc::Direction> directions(
             path.directions.begin(),
@@ -431,7 +456,7 @@ namespace Decision{
             others);
         
         if (path.has_value()) { // if it returns a path
-            execute_path(*path);
+            execute_path(*path, tiles);
             return;
         }
 
@@ -443,7 +468,7 @@ namespace Decision{
             moves_this_turn, 
             others
         );
-
+    
         auto frontier_targets =
             Search::get_frontier_targets(here, round_num);
 
@@ -461,12 +486,12 @@ namespace Decision{
         );
 
         if (frontier_path.has_value()) {
-            execute_path(*frontier_path);
+            execute_path(*frontier_path, tiles);
             return;
         }
 
         if(physical_path.has_value()){
-            execute_path(*physical_path);
+            execute_path(*physical_path, tiles);
             return;
         }
 
@@ -482,7 +507,7 @@ namespace Decision{
             );
 
         if (frontier_physical_path.has_value()) {
-            execute_path(*frontier_physical_path);
+            execute_path(*frontier_physical_path, tiles);
             return;
         }
 
