@@ -19,7 +19,7 @@ namespace Search {
 
     const int CLUSTER_RADIUS = 2;
     const int CLUSTER_MIN_SIZE = 6;
-    int DANGER_WEIGHT = 1;
+    int DANGER_WEIGHT = 0.1;
 
     /* ===============================================================
         Constructors

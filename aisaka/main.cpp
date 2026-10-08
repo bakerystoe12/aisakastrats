@@ -79,7 +79,7 @@ void execute_turn() {
 
     if (round_num > 350){
         Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 0;
-        State::SPLIT_MIN_LENGTH = 7;
+        State::SPLIT_MIN_LENGTH = 5;
     }
     // choose direction theoretically should just do everything now
 
@@ -98,10 +98,10 @@ int main() {
 
         if (!rolled) {
             double progress = (round_num - 1) / 500.0;
-            double aggro_chance = std::max(1.0 - 0.5 * progress, 0.2);
+            double aggro_chance = std::max(1.0 - 0.5 * progress, 0.3);
             State::AGGRESSIVE = stable_roll(unswbc::ct->get_id(), aggro_chance);
             rolled = true;
-            if (round_num < 100) State::AGGRESSIVE = true;
+            if (round_num < 200) State::AGGRESSIVE = true;
 
             if (State::AGGRESSIVE){
                 Search::DANGER_WEIGHT = 0;

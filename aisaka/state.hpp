@@ -16,7 +16,7 @@ namespace State {
     inline bool AGGRESSIVE = true;
     inline bool IS_QUEEN = false;
 
-    inline const int BFS_CAP = 1000;
+    inline const int BFS_CAP = 1500;
     inline const int UNEXPLORED_BFS_CAP = 500;
     inline const double TURN_TIME_BUDGET = 0.75;
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;

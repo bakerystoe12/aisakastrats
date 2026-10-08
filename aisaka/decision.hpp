@@ -164,7 +164,7 @@ namespace Decision{
             return false;
         }
 
-        if (unswbc::game->get_round_num() > 400 && State::IS_QUEEN){
+        if (unswbc::game->get_round_num() > 100 && State::IS_QUEEN){
             return false;
         }
         
@@ -530,4 +530,4 @@ namespace Decision{
             }
         }
     }
-} // decision closer
+} // decision closer    
