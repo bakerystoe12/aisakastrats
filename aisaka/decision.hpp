@@ -164,7 +164,11 @@ namespace Decision{
             return false;
         }
 
-        if (unswbc::game->get_round_num() > 100 && State::IS_QUEEN){
+        if (State::ENTERED_DEAD_END){
+            return false;
+        }
+
+        if (unswbc::game->get_round_num() > 25 && State::IS_QUEEN){
             return false;
         }
         
@@ -310,10 +314,13 @@ namespace Decision{
 
         int moves = 0;
 
+        unswbc::Position current_position =
+            unswbc::ct->get_position();
+
         // Only execute moves that are:
         // 1. within the sprint limit
         // 2. present in the path
-        // 3. inside current vision
+        // 3. inside current vision, unless the move enters a portal
         for (int i = 0; i < max_moves; ++i) {
 
             if (i >= static_cast<int>(path.directions.size()))
@@ -322,10 +329,31 @@ namespace Decision{
             if (i >= static_cast<int>(path.positions.size()))
                 break;
 
-            if (!visible.count(path.positions[i]))
+            const auto direction = path.directions[i];
+            const auto position = path.positions[i];
+
+            auto edge =
+                Memory::known_edge_type(
+                    current_position,
+                    direction
+                );
+
+            bool through_portal =
+                edge == unswbc::EdgeType::PORTAL;
+
+            // Normal movement must lead to a visible tile.
+            // A portal exit does not need to be visible because
+            // dragons cannot see through portals.
+            if (!through_portal &&
+                !visible.count(position)) {
                 break;
+            }
 
             ++moves;
+
+            // The next path step starts from this position.
+            // For a portal, this is the portal exit.
+            current_position = position;
         }
 
         if (moves <= 0)
@@ -340,6 +368,37 @@ namespace Decision{
             path.positions.begin(),
             path.positions.begin() + moves
         );
+
+        // --------------------------------------------------------
+        // Check whether we are actually entering a valuable
+        // dead-end pocket during this sprint.
+        // --------------------------------------------------------
+
+        if (!State::ENTERED_DEAD_END) {
+
+            unswbc::Position previous =
+                unswbc::ct->get_position();
+
+            for (const auto& position : positions) {
+
+                auto dead_end =
+                    Search::analyze_dead_end(
+                        position,
+                        previous,
+                        unswbc::game->get_round_num()
+                    );
+
+                if (dead_end.is_dead_end &&
+                    dead_end.pearl_count >
+                        State::DEAD_END_PEARL_THRESHOLD) {
+
+                    State::ENTERED_DEAD_END = true;
+                    break;
+                }
+
+                previous = position;
+            }
+        }
 
         Memory::predict_own_body(
             positions,
@@ -520,12 +579,12 @@ namespace Decision{
             return;
         }
 
-        for (auto d :unswbc::Direction::get_direction_list()) {  // something more sophisticated for this
+        for (auto d :unswbc::Direction::get_direction_list()) {
 
             auto nxt =
                 Search::open_step(here, d);
 
-            if (nxt.has_value() && d != unswbc::ct->get_dir().get_opposite()) {
+            if (nxt.has_value()) {
                 unswbc::ct->make_move(d);
             }
         }

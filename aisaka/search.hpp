@@ -2335,15 +2335,64 @@ namespace Search {
         return std::nullopt;
     }
     
+    // ============================================================
+    // Emergency move tuning
+    // ============================================================
+
+    const int EMERGENCY_MOBILITY_WEIGHT    = 10;
+    // Bonus for each physical exit from the candidate tile.
+
+    const int EMERGENCY_UNEXPLORED_BONUS   = 5;
+    // Bonus for moving into a tile we have not visited before.
+
+    const int EMERGENCY_DEAD_END_PENALTY   = 50;
+    // Penalty for entering a dead end.
+
+    const int EMERGENCY_PEARL_BONUS        = 25;
+    // Bonus per pearl found inside a dead end.
+
+    const int EMERGENCY_ALLY_BLOCK_PENALTY = 100;
+    // Penalty for blocking an ally.
+
+
+    // ============================================================
+    // Emergency move
+    // ============================================================
+
     std::optional<unswbc::Direction> choose_emergency_move(
         unswbc::Position here,
         int round_num,
         const std::vector<unswbc::DragonPart*>& others
     ) {
-        std::vector<std::pair<
-            unswbc::Direction,
-            unswbc::Position
-        >> candidates;
+        struct Candidate {
+            unswbc::Direction direction;
+            unswbc::Position position;
+
+            bool dead_end;
+            int pearl_count;
+            bool blocks_ally;
+            int mobility;
+            int score;
+
+            Candidate(
+                unswbc::Direction direction,
+                unswbc::Position position
+            )
+                : direction(direction),
+                position(position),
+                dead_end(false),
+                pearl_count(0),
+                blocks_ally(false),
+                mobility(0),
+                score(0)
+            {}
+        };
+
+        std::vector<Candidate> candidates;
+
+        // ========================================================
+        // Generate physically possible candidates
+        // ========================================================
 
         for (const auto& direction :
             unswbc::Direction::get_direction_list()) {
@@ -2356,38 +2405,24 @@ namespace Search {
 
             unswbc::Position next;
 
-            // Normal movement.
+            // ----------------------------------------------------
+            // Normal movement
+            // ----------------------------------------------------
+
             if (edge == unswbc::EdgeType::EMPTY) {
                 next = here.add_dir(direction);
             }
 
-            // Portal movement.
+            // ----------------------------------------------------
+            // Portal movement
+            // ----------------------------------------------------
+
             else if (edge == unswbc::EdgeType::PORTAL) {
+
                 if (!get_portal_destination(
                         here,
                         direction,
                         next)) {
-                    continue;
-                }
-
-                // Respect portal cooldown.
-                auto edge_key =
-                    Memory::edge_key(here, direction);
-
-                auto portal_it =
-                    State::PORTAL_EDGES.find(edge_key);
-
-                if (portal_it == State::PORTAL_EDGES.end())
-                    continue;
-
-                int portal_id = portal_it->second;
-
-                int cooldown =
-                    0;
-
-                if (portal_id == State::LAST_PORTAL_ID &&
-                    round_num - State::LAST_PORTAL_ROUND <
-                        cooldown) {
                     continue;
                 }
             }
@@ -2396,11 +2431,20 @@ namespace Search {
                 continue;
             }
 
+            // ----------------------------------------------------
+            // Hard constraint:
             // Never move into known occupied space.
+            // ----------------------------------------------------
+
             if (Memory::known_occupied(next))
                 continue;
 
-            // Reject dead ends that aren't worth entering.
+            Candidate candidate(direction, next);
+
+            // ====================================================
+            // Dead-end analysis
+            // ====================================================
+
             DeadEndResult dead_end =
                 analyze_dead_end(
                     next,
@@ -2408,34 +2452,26 @@ namespace Search {
                     round_num
                 );
 
-            if (dead_end.is_dead_end &&
-                dead_end.pearl_count <=
-                    State::DEAD_END_PEARL_THRESHOLD) {
-                continue;
-            }
+            candidate.dead_end =
+                dead_end.is_dead_end;
 
-            // Don't immediately block an ally.
-            if (blocks_ally(
+            candidate.pearl_count =
+                dead_end.pearl_count;
+
+            // ====================================================
+            // Ally blocking
+            // ====================================================
+
+            candidate.blocks_ally =
+                blocks_ally(
                     next,
                     others,
-                    round_num)) {
-                continue;
-            }
+                    round_num
+                );
 
-            candidates.push_back({
-                direction,
-                next
-            });
-        }
-
-        if (candidates.empty())
-            return std::nullopt;
-
-        // Prefer the move that leaves the most physical mobility.
-        int best_score = -1;
-        std::optional<unswbc::Direction> best_move;
-
-        for (const auto& [direction, next] : candidates) {
+            // ====================================================
+            // Physical mobility
+            // ====================================================
 
             auto exits =
                 get_physical_neighbors(
@@ -2443,19 +2479,119 @@ namespace Search {
                     round_num
                 );
 
-            int score =
-                static_cast<int>(exits.size()) * 10;
+            candidate.mobility =
+                static_cast<int>(exits.size());
+
+            // ====================================================
+            // Calculate score
+            // ====================================================
+
+            int score = 0;
+
+            // More exits = more future options.
+            score +=
+                candidate.mobility *
+                EMERGENCY_MOBILITY_WEIGHT;
 
             // Prefer unexplored territory.
-            if (!State::EXPLORATION_VISITED.count(next))
-                score += 5;
+            if (!State::EXPLORATION_VISITED.count(next)) {
+                score += EMERGENCY_UNEXPLORED_BONUS;
+            }
 
-            if (score > best_score) {
-                best_score = score;
-                best_move = direction;
+            // Penalize dead ends.
+            //
+            // Pearls partially offset the penalty because entering
+            // a dead end containing valuable pearls can still be
+            // worthwhile.
+            if (candidate.dead_end) {
+
+                score -=
+                    EMERGENCY_DEAD_END_PENALTY;
+
+                score +=
+                    candidate.pearl_count *
+                    EMERGENCY_PEARL_BONUS;
+            }
+
+            // Penalize blocking an ally.
+            if (candidate.blocks_ally) {
+                score -=
+                    EMERGENCY_ALLY_BLOCK_PENALTY;
+            }
+
+            candidate.score = score;
+
+            candidates.push_back(candidate);
+        }
+
+        // ========================================================
+        // No physically legal moves
+        // ========================================================
+
+        if (candidates.empty())
+            return std::nullopt;
+
+        // ========================================================
+        // Select best candidate
+        // ========================================================
+
+        const Candidate* best = nullptr;
+
+        for (const auto& candidate : candidates) {
+
+            if (best == nullptr) {
+                best = &candidate;
+                continue;
+            }
+
+            // ----------------------------------------------------
+            // Primary: highest score
+            // ----------------------------------------------------
+
+            if (candidate.score > best->score) {
+                best = &candidate;
+                continue;
+            }
+
+            if (candidate.score != best->score)
+                continue;
+
+            // ----------------------------------------------------
+            // Tie-breaker 1:
+            // Prefer non-dead-end.
+            // ----------------------------------------------------
+
+            if (candidate.dead_end != best->dead_end) {
+
+                if (!candidate.dead_end)
+                    best = &candidate;
+
+                continue;
+            }
+
+            // ----------------------------------------------------
+            // Tie-breaker 2:
+            // Prefer not blocking an ally.
+            // ----------------------------------------------------
+
+            if (candidate.blocks_ally != best->blocks_ally) {
+
+                if (!candidate.blocks_ally)
+                    best = &candidate;
+
+                continue;
+            }
+
+            // ----------------------------------------------------
+            // Tie-breaker 3:
+            // Prefer greater mobility.
+            // ----------------------------------------------------
+
+            if (candidate.mobility > best->mobility) {
+                best = &candidate;
             }
         }
 
-        return best_move;
+        return best->direction;
     }
 } // search namespace closer
