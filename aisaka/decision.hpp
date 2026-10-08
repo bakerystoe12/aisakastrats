@@ -203,7 +203,7 @@ namespace Decision{
             return false;
         }
 
-        if (unswbc::game->get_round_num() > 25 && State::IS_QUEEN){
+        if (unswbc::game->get_round_num() > 250 && State::IS_QUEEN){
             return false;
         }
         
