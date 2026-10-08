@@ -1321,6 +1321,14 @@ namespace Search {
             int distance;
         };
 
+        // ================================================================
+        // Check whether a KELP edge borders unexplored territory.
+        //
+        //     KNOWN TILE | KELP | UNKNOWN
+        //
+        // This is the only type of KELP that matters to exploration.
+        // ================================================================
+
         auto is_kelp_frontier =
             [&](const unswbc::Position& pos,
                 unswbc::Direction direction) -> bool {
@@ -1339,6 +1347,21 @@ namespace Search {
 
             return !tile_ever_seen(beyond);
         };
+
+
+        // ================================================================
+        // Check whether the KELP is part of a tunnel/corridor.
+        //
+        // For a vertical wall, the wall runs NORTH/SOUTH, so we inspect
+        // NORTH/SOUTH for continued open space.
+        //
+        // For a horizontal wall, the wall runs EAST/WEST, so we inspect
+        // EAST/WEST.
+        //
+        // We look several tiles along the wall. This prevents a single
+        // open tile from making us incorrectly classify a large wall as
+        // a tunnel.
+        // ================================================================
 
         auto is_kelp_tunnel =
             [&](const unswbc::Position& pos,
@@ -1359,6 +1382,7 @@ namespace Search {
                 vertical_wall
                     ? unswbc::Direction::SOUTH
                     : unswbc::Direction::WEST;
+
 
             for (auto parallel_direction :
                 {parallel_a, parallel_b}) {
@@ -1409,6 +1433,34 @@ namespace Search {
             return false;
         };
 
+
+        // ================================================================
+        // Find a probe position approximately two tiles away from the
+        // KELP wall.
+        //
+        // The probe is perpendicular to the wall.
+        //
+        // Vertical wall:
+        //
+        //     K
+        //     K
+        //     K
+        //
+        //       . . X
+        //
+        // Horizontal wall:
+        //
+        //     K K K K
+        //
+        //       .
+        //       .
+        //       X
+        //
+        // The probe must also have known open space parallel to the wall
+        // so that it can actually investigate the wall rather than being
+        // placed in another dead end.
+        // ================================================================
+
         auto get_kelp_probe =
             [&](const unswbc::Position& wall_tile,
                 unswbc::Direction wall_direction)
@@ -1420,11 +1472,19 @@ namespace Search {
                 wall_direction ==
                     unswbc::Direction::WEST;
 
+
+            // KELP is on this side, so move in the opposite direction.
             unswbc::Direction away_direction =
                 wall_direction.get_opposite();
 
+
             unswbc::Position probe =
                 wall_tile;
+
+
+            // ------------------------------------------------------------
+            // Move exactly two tiles away from the wall.
+            // ------------------------------------------------------------
 
             for (int i = 0;
                 i < KELP_PROBE_DISTANCE;
@@ -1453,8 +1513,15 @@ namespace Search {
                 }
             }
 
+
+            // The probe itself must already be known territory.
             if (!tile_ever_seen(probe))
                 return std::nullopt;
+
+
+            // ------------------------------------------------------------
+            // Determine the directions parallel to the wall.
+            // ------------------------------------------------------------
 
             unswbc::Direction parallel_a =
                 vertical_wall
@@ -1465,6 +1532,11 @@ namespace Search {
                 vertical_wall
                     ? unswbc::Direction::SOUTH
                     : unswbc::Direction::WEST;
+
+
+            // ------------------------------------------------------------
+            // Make sure the probe has somewhere to move along the wall.
+            // ------------------------------------------------------------
 
             bool has_parallel_space = false;
 
@@ -1497,17 +1569,13 @@ namespace Search {
             if (!has_parallel_space)
                 return std::nullopt;
 
+
             return probe;
         };
 
+
         // ================================================================
         // LOCAL SEARCH
-        //
-        // Priority:
-        //   1. Actual unexplored tile
-        //   2. Useful kelp probe
-        //
-        // An unexplored opening is never suppressed by a kelp probe.
         // ================================================================
 
         std::deque<Node> local_queue;
@@ -1517,65 +1585,67 @@ namespace Search {
             unswbc::PositionHash
         > local_seen;
 
-        local_queue.push_back({start, 0});
+        local_queue.push_back({
+            start,
+            0
+        });
+
         local_seen.insert(start);
 
-        std::optional<unswbc::Position> best_kelp_probe;
-        int best_probe_distance = INT_MAX;
+
+        std::optional<unswbc::Position>
+            best_kelp_probe;
+
+        int best_probe_distance =
+            INT_MAX;
+
 
         while (!local_queue.empty()) {
+
             Node current =
                 local_queue.front();
 
             local_queue.pop_front();
 
-            if (current.distance >= LOCAL_SEARCH_DEPTH)
+
+            if (
+                current.distance >=
+                LOCAL_SEARCH_DEPTH
+            ) {
                 continue;
+            }
+
+
+            // ============================================================
+            // LOOK FOR KELP WALLS BLOCKING UNEXPLORED TERRITORY
+            // ============================================================
 
             for (auto direction :
                 unswbc::Direction::get_direction_list()) {
 
+                if (
+                    !is_kelp_frontier(
+                        current.pos,
+                        direction
+                    )
+                ) {
+                    continue;
+                }
+
+
                 // --------------------------------------------------------
-                // Check for an actual unexplored opening.
-                //
-                // This takes priority over kelp probing.
+                // Don't treat a KELP tunnel like a wall.
                 // --------------------------------------------------------
 
                 if (
-                    Memory::known_edge_type(
+                    is_kelp_tunnel(
                         current.pos,
                         direction
-                    ) == unswbc::EdgeType::EMPTY
+                    )
                 ) {
-                    auto next =
-                        current.pos.add_dir(direction);
-
-                    if (
-                        !State::EXPLORATION_VISITED.count(next) &&
-                        !tile_ever_seen(next) &&
-                        !Memory::known_occupied(next)
-                    ) {
-                        return next;
-                    }
-                }
-
-                // --------------------------------------------------------
-                // Check for a useful kelp frontier.
-                // --------------------------------------------------------
-
-                if (!is_kelp_frontier(
-                        current.pos,
-                        direction
-                )) {
                     continue;
                 }
 
-                if (is_kelp_tunnel(
-                        current.pos,
-                        direction
-                )) {
-                    continue;
-                }
 
                 auto probe =
                     get_kelp_probe(
@@ -1586,21 +1656,30 @@ namespace Search {
                 if (!probe.has_value())
                     continue;
 
+
                 int probe_distance =
-                    dist(start, *probe);
+                    dist(
+                        start,
+                        *probe
+                    );
+
 
                 if (
                     probe_distance <
                     best_probe_distance
                 ) {
-                    best_kelp_probe = probe;
-                    best_probe_distance = probe_distance;
+                    best_kelp_probe =
+                        probe;
+
+                    best_probe_distance =
+                        probe_distance;
                 }
             }
 
-            // ------------------------------------------------------------
-            // Continue exploring already-seen territory.
-            // ------------------------------------------------------------
+
+            // ============================================================
+            // NORMAL LOCAL EXPLORATION
+            // ============================================================
 
             for (const auto& neighbour :
                 get_neighbors(
@@ -1611,28 +1690,55 @@ namespace Search {
                 auto nxt =
                     neighbour.position;
 
+
                 if (local_seen.count(nxt))
                     continue;
 
                 local_seen.insert(nxt);
 
-                if (Memory::known_occupied(nxt))
+
+                if (
+                    Memory::known_occupied(
+                        nxt
+                    )
+                ) {
                     continue;
+                }
+
 
                 int next_distance =
                     current.distance +
                     neighbour.cost;
 
+
+                // --------------------------------------------------------
+                // Directly reachable unexplored tile.
+                // --------------------------------------------------------
+
                 if (
-                    !State::EXPLORATION_VISITED.count(nxt) &&
+                    !State::EXPLORATION_VISITED.count(
+                        nxt
+                    ) &&
                     !tile_ever_seen(nxt)
                 ) {
-                    // This is another unexplored tile found through
-                    // the local search. Take it immediately.
-                    return nxt;
+
+                    /*
+                    * If there is no KELP wall requiring investigation,
+                    * immediately use the normal unexplored target.
+                    */
+                    if (!best_kelp_probe.has_value())
+                        return nxt;
+
+                    continue;
                 }
 
+
+                // --------------------------------------------------------
+                // Continue searching through known territory.
+                // --------------------------------------------------------
+
                 if (tile_ever_seen(nxt)) {
+
                     local_queue.push_back({
                         nxt,
                         next_distance
@@ -1641,17 +1747,19 @@ namespace Search {
             }
         }
 
+
         // ================================================================
-        // No nearby unexplored opening.
-        //
-        // Now use the best kelp probe we found.
+        // KELP WALL PROBE
         // ================================================================
 
         if (best_kelp_probe.has_value())
             return best_kelp_probe;
 
+
         // ================================================================
-        // GENERAL UNEXPLORED BFS
+        // BROAD SEARCH
+        //
+        // Same basic behaviour as your original fallback.
         // ================================================================
 
         std::deque<Node> queue;
@@ -1661,21 +1769,29 @@ namespace Search {
             unswbc::PositionHash
         > seen;
 
-        queue.push_back({start, 0});
+        queue.push_back({
+            start,
+            0
+        });
+
         seen.insert(start);
 
         int expanded = 0;
 
+
         while (
             !queue.empty() &&
-            expanded < State::UNEXPLORED_BFS_CAP
+            expanded <
+                State::UNEXPLORED_BFS_CAP
         ) {
+
             Node current =
                 queue.front();
 
             queue.pop_front();
 
             ++expanded;
+
 
             for (const auto& neighbour :
                 get_neighbors(
@@ -1686,22 +1802,42 @@ namespace Search {
                 auto nxt =
                     neighbour.position;
 
+
                 if (seen.count(nxt))
                     continue;
 
                 seen.insert(nxt);
 
-                if (Memory::known_occupied(nxt))
-                    continue;
 
                 if (
-                    !State::EXPLORATION_VISITED.count(nxt) &&
+                    Memory::known_occupied(
+                        nxt
+                    )
+                ) {
+                    continue;
+                }
+
+
+                // --------------------------------------------------------
+                // Normal unexplored territory.
+                // --------------------------------------------------------
+
+                if (
+                    !State::EXPLORATION_VISITED.count(
+                        nxt
+                    ) &&
                     !tile_ever_seen(nxt)
                 ) {
                     return nxt;
                 }
 
+
+                // --------------------------------------------------------
+                // Continue through known territory.
+                // --------------------------------------------------------
+
                 if (tile_ever_seen(nxt)) {
+
                     queue.push_back({
                         nxt,
                         current.distance +
@@ -1710,6 +1846,7 @@ namespace Search {
                 }
             }
         }
+
 
         return std::nullopt;
     }
@@ -1734,7 +1871,7 @@ namespace Search {
         * First pass:
         * Search locally for visible-but-unvisited frontier tiles.
         */
-        constexpr int LOCAL_SEARCH_DEPTH = 3;
+        constexpr int LOCAL_SEARCH_DEPTH = 6;
 
         std::deque<Node> local_queue;
 
