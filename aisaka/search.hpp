@@ -144,6 +144,20 @@ namespace Search {
         return options;
     }
 
+    bool safe_portal_exit_known(
+        const unswbc::Position& destination
+    ) {
+        // We need to know the terrain around the portal exit
+        // before a SAFE dragon commits to entering it.
+        for (auto d : unswbc::Direction::get_direction_list()) {
+            if (!Memory::edge_is_known(destination, d)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /* ========================================================================================
         Helper functions: dist, tile_ever_seen, open_step, get_neighbors, get_known neighbors
     =========================================================================================*/
@@ -579,6 +593,11 @@ namespace Search {
         // 5. Portal cooldown
         if (neighbour.through_portal) {
             int cooldown = 0;
+
+            if (mode == SearchMode::SAFE &&
+                !safe_portal_exit_known(nxt)) {
+                return false;
+            }
 
             if (neighbour.portal_id == State::LAST_PORTAL_ID &&
                 round_num - State::LAST_PORTAL_ROUND < cooldown) {
