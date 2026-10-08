@@ -485,6 +485,12 @@ namespace Decision{
                 return;
         }
 
+        if (enemy_nearby(others)){
+            if (queen_try_stall_split()){
+                return;
+            }
+        }
+
         // ================================================================
         // If completely trapped, try to create space with a split.
         // ================================================================
@@ -573,6 +579,16 @@ namespace Decision{
 
         if (queen_try_stall_split())
             return;
+
+        for (auto d :unswbc::Direction::get_direction_list()) {
+
+            auto nxt =
+                Search::open_step(here, d);
+
+            if (nxt.has_value()) {
+                unswbc::ct->make_move(d);
+            }
+        }
     }
 
 

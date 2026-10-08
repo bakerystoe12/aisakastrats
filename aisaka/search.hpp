@@ -1321,14 +1321,6 @@ namespace Search {
             int distance;
         };
 
-        // ================================================================
-        // Check whether a KELP edge borders unexplored territory.
-        //
-        //     KNOWN TILE | KELP | UNKNOWN
-        //
-        // This is the only type of KELP that matters to exploration.
-        // ================================================================
-
         auto is_kelp_frontier =
             [&](const unswbc::Position& pos,
                 unswbc::Direction direction) -> bool {
@@ -1347,21 +1339,6 @@ namespace Search {
 
             return !tile_ever_seen(beyond);
         };
-
-
-        // ================================================================
-        // Check whether the KELP is part of a tunnel/corridor.
-        //
-        // For a vertical wall, the wall runs NORTH/SOUTH, so we inspect
-        // NORTH/SOUTH for continued open space.
-        //
-        // For a horizontal wall, the wall runs EAST/WEST, so we inspect
-        // EAST/WEST.
-        //
-        // We look several tiles along the wall. This prevents a single
-        // open tile from making us incorrectly classify a large wall as
-        // a tunnel.
-        // ================================================================
 
         auto is_kelp_tunnel =
             [&](const unswbc::Position& pos,
@@ -1382,7 +1359,6 @@ namespace Search {
                 vertical_wall
                     ? unswbc::Direction::SOUTH
                     : unswbc::Direction::WEST;
-
 
             for (auto parallel_direction :
                 {parallel_a, parallel_b}) {
@@ -1433,34 +1409,6 @@ namespace Search {
             return false;
         };
 
-
-        // ================================================================
-        // Find a probe position approximately two tiles away from the
-        // KELP wall.
-        //
-        // The probe is perpendicular to the wall.
-        //
-        // Vertical wall:
-        //
-        //     K
-        //     K
-        //     K
-        //
-        //       . . X
-        //
-        // Horizontal wall:
-        //
-        //     K K K K
-        //
-        //       .
-        //       .
-        //       X
-        //
-        // The probe must also have known open space parallel to the wall
-        // so that it can actually investigate the wall rather than being
-        // placed in another dead end.
-        // ================================================================
-
         auto get_kelp_probe =
             [&](const unswbc::Position& wall_tile,
                 unswbc::Direction wall_direction)
@@ -1472,19 +1420,11 @@ namespace Search {
                 wall_direction ==
                     unswbc::Direction::WEST;
 
-
-            // KELP is on this side, so move in the opposite direction.
             unswbc::Direction away_direction =
                 wall_direction.get_opposite();
 
-
             unswbc::Position probe =
                 wall_tile;
-
-
-            // ------------------------------------------------------------
-            // Move exactly two tiles away from the wall.
-            // ------------------------------------------------------------
 
             for (int i = 0;
                 i < KELP_PROBE_DISTANCE;
@@ -1513,15 +1453,8 @@ namespace Search {
                 }
             }
 
-
-            // The probe itself must already be known territory.
             if (!tile_ever_seen(probe))
                 return std::nullopt;
-
-
-            // ------------------------------------------------------------
-            // Determine the directions parallel to the wall.
-            // ------------------------------------------------------------
 
             unswbc::Direction parallel_a =
                 vertical_wall
@@ -1532,11 +1465,6 @@ namespace Search {
                 vertical_wall
                     ? unswbc::Direction::SOUTH
                     : unswbc::Direction::WEST;
-
-
-            // ------------------------------------------------------------
-            // Make sure the probe has somewhere to move along the wall.
-            // ------------------------------------------------------------
 
             bool has_parallel_space = false;
 
@@ -1569,13 +1497,17 @@ namespace Search {
             if (!has_parallel_space)
                 return std::nullopt;
 
-
             return probe;
         };
 
-
         // ================================================================
         // LOCAL SEARCH
+        //
+        // Priority:
+        //   1. Actual unexplored tile
+        //   2. Useful kelp probe
+        //
+        // An unexplored opening is never suppressed by a kelp probe.
         // ================================================================
 
         std::deque<Node> local_queue;
@@ -1585,67 +1517,65 @@ namespace Search {
             unswbc::PositionHash
         > local_seen;
 
-        local_queue.push_back({
-            start,
-            0
-        });
-
+        local_queue.push_back({start, 0});
         local_seen.insert(start);
 
-
-        std::optional<unswbc::Position>
-            best_kelp_probe;
-
-        int best_probe_distance =
-            INT_MAX;
-
+        std::optional<unswbc::Position> best_kelp_probe;
+        int best_probe_distance = INT_MAX;
 
         while (!local_queue.empty()) {
-
             Node current =
                 local_queue.front();
 
             local_queue.pop_front();
 
-
-            if (
-                current.distance >=
-                LOCAL_SEARCH_DEPTH
-            ) {
+            if (current.distance >= LOCAL_SEARCH_DEPTH)
                 continue;
-            }
-
-
-            // ============================================================
-            // LOOK FOR KELP WALLS BLOCKING UNEXPLORED TERRITORY
-            // ============================================================
 
             for (auto direction :
                 unswbc::Direction::get_direction_list()) {
 
-                if (
-                    !is_kelp_frontier(
-                        current.pos,
-                        direction
-                    )
-                ) {
-                    continue;
-                }
-
-
                 // --------------------------------------------------------
-                // Don't treat a KELP tunnel like a wall.
+                // Check for an actual unexplored opening.
+                //
+                // This takes priority over kelp probing.
                 // --------------------------------------------------------
 
                 if (
-                    is_kelp_tunnel(
+                    Memory::known_edge_type(
                         current.pos,
                         direction
-                    )
+                    ) == unswbc::EdgeType::EMPTY
                 ) {
+                    auto next =
+                        current.pos.add_dir(direction);
+
+                    if (
+                        !State::EXPLORATION_VISITED.count(next) &&
+                        !tile_ever_seen(next) &&
+                        !Memory::known_occupied(next)
+                    ) {
+                        return next;
+                    }
+                }
+
+                // --------------------------------------------------------
+                // Check for a useful kelp frontier.
+                // --------------------------------------------------------
+
+                if (!is_kelp_frontier(
+                        current.pos,
+                        direction
+                )) {
                     continue;
                 }
 
+                if (is_kelp_tunnel(
+                        current.pos,
+                        direction
+                )) {
+                    continue;
+                }
 
                 auto probe =
                     get_kelp_probe(
@@ -1656,30 +1586,21 @@ namespace Search {
                 if (!probe.has_value())
                     continue;
 
-
                 int probe_distance =
-                    dist(
-                        start,
-                        *probe
-                    );
-
+                    dist(start, *probe);
 
                 if (
                     probe_distance <
                     best_probe_distance
                 ) {
-                    best_kelp_probe =
-                        probe;
-
-                    best_probe_distance =
-                        probe_distance;
+                    best_kelp_probe = probe;
+                    best_probe_distance = probe_distance;
                 }
             }
 
-
-            // ============================================================
-            // NORMAL LOCAL EXPLORATION
-            // ============================================================
+            // ------------------------------------------------------------
+            // Continue exploring already-seen territory.
+            // ------------------------------------------------------------
 
             for (const auto& neighbour :
                 get_neighbors(
@@ -1690,55 +1611,28 @@ namespace Search {
                 auto nxt =
                     neighbour.position;
 
-
                 if (local_seen.count(nxt))
                     continue;
 
                 local_seen.insert(nxt);
 
-
-                if (
-                    Memory::known_occupied(
-                        nxt
-                    )
-                ) {
+                if (Memory::known_occupied(nxt))
                     continue;
-                }
-
 
                 int next_distance =
                     current.distance +
                     neighbour.cost;
 
-
-                // --------------------------------------------------------
-                // Directly reachable unexplored tile.
-                // --------------------------------------------------------
-
                 if (
-                    !State::EXPLORATION_VISITED.count(
-                        nxt
-                    ) &&
+                    !State::EXPLORATION_VISITED.count(nxt) &&
                     !tile_ever_seen(nxt)
                 ) {
-
-                    /*
-                    * If there is no KELP wall requiring investigation,
-                    * immediately use the normal unexplored target.
-                    */
-                    if (!best_kelp_probe.has_value())
-                        return nxt;
-
-                    continue;
+                    // This is another unexplored tile found through
+                    // the local search. Take it immediately.
+                    return nxt;
                 }
 
-
-                // --------------------------------------------------------
-                // Continue searching through known territory.
-                // --------------------------------------------------------
-
                 if (tile_ever_seen(nxt)) {
-
                     local_queue.push_back({
                         nxt,
                         next_distance
@@ -1747,19 +1641,17 @@ namespace Search {
             }
         }
 
-
         // ================================================================
-        // KELP WALL PROBE
+        // No nearby unexplored opening.
+        //
+        // Now use the best kelp probe we found.
         // ================================================================
 
         if (best_kelp_probe.has_value())
             return best_kelp_probe;
 
-
         // ================================================================
-        // BROAD SEARCH
-        //
-        // Same basic behaviour as your original fallback.
+        // GENERAL UNEXPLORED BFS
         // ================================================================
 
         std::deque<Node> queue;
@@ -1769,29 +1661,21 @@ namespace Search {
             unswbc::PositionHash
         > seen;
 
-        queue.push_back({
-            start,
-            0
-        });
-
+        queue.push_back({start, 0});
         seen.insert(start);
 
         int expanded = 0;
 
-
         while (
             !queue.empty() &&
-            expanded <
-                State::UNEXPLORED_BFS_CAP
+            expanded < State::UNEXPLORED_BFS_CAP
         ) {
-
             Node current =
                 queue.front();
 
             queue.pop_front();
 
             ++expanded;
-
 
             for (const auto& neighbour :
                 get_neighbors(
@@ -1802,42 +1686,22 @@ namespace Search {
                 auto nxt =
                     neighbour.position;
 
-
                 if (seen.count(nxt))
                     continue;
 
                 seen.insert(nxt);
 
-
-                if (
-                    Memory::known_occupied(
-                        nxt
-                    )
-                ) {
+                if (Memory::known_occupied(nxt))
                     continue;
-                }
-
-
-                // --------------------------------------------------------
-                // Normal unexplored territory.
-                // --------------------------------------------------------
 
                 if (
-                    !State::EXPLORATION_VISITED.count(
-                        nxt
-                    ) &&
+                    !State::EXPLORATION_VISITED.count(nxt) &&
                     !tile_ever_seen(nxt)
                 ) {
                     return nxt;
                 }
 
-
-                // --------------------------------------------------------
-                // Continue through known territory.
-                // --------------------------------------------------------
-
                 if (tile_ever_seen(nxt)) {
-
                     queue.push_back({
                         nxt,
                         current.distance +
@@ -1846,7 +1710,6 @@ namespace Search {
                 }
             }
         }
-
 
         return std::nullopt;
     }
@@ -3030,22 +2893,13 @@ namespace Search {
         const std::vector<unswbc::DragonPart*>& others,
         int round_num
     ) {
-        // ================================================================
-        // QUEEN TARGET WEIGHTS
-        // ================================================================
-
         constexpr int ALLY_DISTANCE_WEIGHT  = -5;
         constexpr int ENEMY_DISTANCE_WEIGHT = 25;
-        constexpr int MOBILITY_WEIGHT       = 5;
-        constexpr int PEARL_BONUS           = 20;
-
+        constexpr int MOBILITY_WEIGHT       = 4;
+        constexpr int PEARL_BONUS           = 10;
         constexpr int PATH_DISTANCE_WEIGHT  = 1;
         constexpr int TARGET_SCORE_BASE     = 100;
-
-
-        // ================================================================
-        // SAFETY ZONES
-        // ================================================================
+        constexpr int VISION_RADIUS         = 3;
 
         std::vector<std::pair<unswbc::Position, int>> candidates;
 
@@ -3055,9 +2909,373 @@ namespace Search {
         auto queen_safe_zone =
             build_queen_safe_zone(others);
 
+        // ================================================================
+        // TOROIDAL CHEBYSHEV DISTANCE
+        //
+        // Queen vision is a 7x7 square, so use Chebyshev distance rather
+        // than the normal Manhattan distance.
+        // ================================================================
+
+        auto queen_vision_distance =
+            [&](const unswbc::Position& a,
+                const unswbc::Position& b) -> int {
+
+            int dx = std::abs(a.x - b.x);
+            int dy = std::abs(a.y - b.y);
+
+            dx = std::min(dx, State::WIDTH - dx);
+            dy = std::min(dy, State::HEIGHT - dy);
+
+            return std::max(dx, dy);
+        };
 
         // ================================================================
-        // LOCAL BFS
+        // SAFE PEARL CHECK
+        //
+        // A pearl is considered safe if:
+        //
+        // 1. There are no enemy heads currently inside the queen's 7x7
+        //    vision.
+        //
+        // 2. Every known route from the pearl toward the queen's current
+        //    vision boundary is blocked by KELP.
+        //
+        // Unknown edges do NOT prove safety.
+        //
+        // Portals are followed when they can be resolved.
+        // ================================================================
+
+        auto is_safe_queen_pearl =
+            [&](const unswbc::Position& pearl) -> bool {
+
+            // ------------------------------------------------------------
+            // First make sure there is no enemy head currently inside the
+            // queen's vision.
+            // ------------------------------------------------------------
+
+            for (const auto* part : others) {
+                if (!part)
+                    continue;
+
+                if (
+                    part->get_team() ==
+                    unswbc::ct->get_team()
+                )
+                    continue;
+
+                if (!part->is_head())
+                    continue;
+
+                if (
+                    queen_vision_distance(
+                        here,
+                        part->get_position()
+                    ) <= VISION_RADIUS
+                ) {
+                    return false;
+                }
+            }
+
+            // ------------------------------------------------------------
+            // The pearl must be in an area we have actually seen.
+            // ------------------------------------------------------------
+
+            if (!tile_ever_seen(pearl))
+                return false;
+
+            std::deque<unswbc::Position> queue;
+
+            std::unordered_set<
+                unswbc::Position,
+                unswbc::PositionHash
+            > seen;
+
+            queue.push_back(pearl);
+            seen.insert(pearl);
+
+            while (!queue.empty()) {
+                auto current =
+                    queue.front();
+
+                queue.pop_front();
+
+                // --------------------------------------------------------
+                // If we can reach the current vision boundary without
+                // crossing KELP, an enemy can potentially enter from there.
+                // --------------------------------------------------------
+
+                if (
+                    queen_vision_distance(
+                        here,
+                        current
+                    ) == VISION_RADIUS
+                ) {
+                    return false;
+                }
+
+                for (auto direction :
+                    unswbc::Direction::get_direction_list()) {
+
+                    // ----------------------------------------------------
+                    // Unknown edges do not prove safety.
+                    //
+                    // We cannot assume an unknown edge is KELP.
+                    // ----------------------------------------------------
+
+                    if (!Memory::edge_is_known(
+                            current,
+                            direction
+                    )) {
+                        return false;
+                    }
+
+                    auto edge =
+                        Memory::known_edge_type(
+                            current,
+                            direction
+                        );
+
+                    // ----------------------------------------------------
+                    // KELP completely blocks this route.
+                    // ----------------------------------------------------
+
+                    if (
+                        edge ==
+                        unswbc::EdgeType::KELP
+                    ) {
+                        continue;
+                    }
+
+                    // ----------------------------------------------------
+                    // Portals can provide another attack route.
+                    // ----------------------------------------------------
+
+                    if (
+                        edge ==
+                        unswbc::EdgeType::PORTAL
+                    ) {
+                        unswbc::Position destination;
+
+                        if (!get_portal_destination(
+                                current,
+                                direction,
+                                destination
+                        )) {
+                            return false;
+                        }
+
+                        if (!seen.count(destination)) {
+                            seen.insert(destination);
+                            queue.push_back(destination);
+                        }
+
+                        continue;
+                    }
+
+                    // ----------------------------------------------------
+                    // Only EMPTY terrain can be traversed.
+                    // ----------------------------------------------------
+
+                    if (
+                        edge !=
+                        unswbc::EdgeType::EMPTY
+                    ) {
+                        continue;
+                    }
+
+                    auto next =
+                        current.add_dir(direction);
+
+                    if (seen.count(next))
+                        continue;
+
+                    if (Memory::known_occupied(next))
+                        continue;
+
+                    seen.insert(next);
+                    queue.push_back(next);
+                }
+            }
+
+            // ------------------------------------------------------------
+            // Every known route from the pearl was sealed before reaching
+            // the queen's vision boundary.
+            // ------------------------------------------------------------
+
+            return true;
+        };
+
+        // ================================================================
+        // TARGET SCORING
+        //
+        // Kept separate so local targets and distant safe pearls use the
+        // exact same scoring system.
+        // ================================================================
+
+        auto add_target =
+            [&](const unswbc::Position& current,
+                int current_distance,
+                bool has_pearl) {
+
+            if (
+                current == here ||
+                fatal_zone.count(current) ||
+                queen_safe_zone.count(current) ||
+                Memory::known_occupied(current)
+            ) {
+                return;
+            }
+
+            // ------------------------------------------------------------
+            // Dead-end detection remains completely separate from the
+            // safe-pearl logic.
+            // ------------------------------------------------------------
+
+            DeadEndResult dead_end =
+                analyze_dead_end(
+                    current,
+                    here,
+                    round_num
+                );
+
+            if (
+                dead_end.is_dead_end &&
+                dead_end.pearl_count <=
+                    State::DEAD_END_PEARL_THRESHOLD
+            ) {
+                return;
+            }
+
+            int score = 0;
+
+            // ------------------------------------------------------------
+            // ALLY DISTANCE
+            //
+            // ALLY_DISTANCE_WEIGHT is negative, so this now gives a small
+            // bonus for keeping some distance from allies.
+            // ------------------------------------------------------------
+
+            int nearest_ally_distance =
+                INT_MAX;
+
+            for (const auto* part : others) {
+                if (!part)
+                    continue;
+
+                if (
+                    part->get_team() !=
+                    unswbc::ct->get_team()
+                )
+                    continue;
+
+                nearest_ally_distance =
+                    std::min(
+                        nearest_ally_distance,
+                        dist(
+                            current,
+                            part->get_position()
+                        )
+                    );
+            }
+
+            if (
+                nearest_ally_distance !=
+                INT_MAX
+            ) {
+                score -=
+                    nearest_ally_distance *
+                    ALLY_DISTANCE_WEIGHT;
+            }
+
+            // ------------------------------------------------------------
+            // ENEMY DISTANCE
+            // ------------------------------------------------------------
+
+            int nearest_enemy_distance =
+                INT_MAX;
+
+            for (const auto* part : others) {
+                if (!part)
+                    continue;
+
+                if (
+                    part->get_team() ==
+                    unswbc::ct->get_team()
+                )
+                    continue;
+
+                if (!part->is_head())
+                    continue;
+
+                nearest_enemy_distance =
+                    std::min(
+                        nearest_enemy_distance,
+                        dist(
+                            current,
+                            part->get_position()
+                        )
+                    );
+            }
+
+            if (
+                nearest_enemy_distance !=
+                INT_MAX
+            ) {
+                score +=
+                    nearest_enemy_distance *
+                    ENEMY_DISTANCE_WEIGHT;
+            }
+
+            // ------------------------------------------------------------
+            // MOBILITY
+            // ------------------------------------------------------------
+
+            auto exits =
+                get_physical_neighbors(
+                    current,
+                    round_num
+                );
+
+            score +=
+                static_cast<int>(exits.size()) *
+                MOBILITY_WEIGHT;
+
+            // ------------------------------------------------------------
+            // PEARL
+            // ------------------------------------------------------------
+
+            if (has_pearl) {
+                score += PEARL_BONUS;
+            }
+
+            // ------------------------------------------------------------
+            // Convert target score into Dijkstra penalty.
+            //
+            // Better target = lower penalty.
+            // ------------------------------------------------------------
+
+            int penalty =
+                std::max(
+                    1,
+                    TARGET_SCORE_BASE -
+                    score +
+                    current_distance *
+                    PATH_DISTANCE_WEIGHT
+                );
+
+            candidates.push_back({
+                current,
+                penalty
+            });
+        };
+
+        // ================================================================
+        // LOCAL QUEEN SEARCH
+        //
+        // This search is deliberately capped.
+        //
+        // The queen cannot use an opening to walk into the entire known
+        // map. Normal queen targets are strictly local.
         // ================================================================
 
         std::deque<unswbc::Position> queue;
@@ -3077,12 +3295,7 @@ namespace Search {
         distance[here] = 0;
         seen.insert(here);
 
-
-        while (
-            !queue.empty() &&
-            static_cast<int>(seen.size()) <
-                State::QUEEN_SAFE_TARGET_CAP
-        ) {
+        while (!queue.empty()) {
             auto current =
                 queue.front();
 
@@ -3091,231 +3304,189 @@ namespace Search {
             int current_distance =
                 distance[current];
 
+            // ------------------------------------------------------------
+            // Evaluate this position as a normal local target.
+            // ------------------------------------------------------------
 
-            // ============================================================
-            // QUEEN LOCAL RADIUS
-            // ============================================================
+            bool has_pearl = false;
+
+            auto pearl_it =
+                State::PEARL_MEMORY.find(current);
 
             if (
-                dist(here, current) >
+                pearl_it !=
+                State::PEARL_MEMORY.end()
+            ) {
+                has_pearl =
+                    pearl_it->second.has_pearl;
+            }
+
+            add_target(
+                current,
+                current_distance,
+                has_pearl
+            );
+
+            // ------------------------------------------------------------
+            // Do NOT expand beyond the queen's local target radius.
+            //
+            // This is the important change that prevents the queen from
+            // following an opening into enemy territory.
+            // ------------------------------------------------------------
+
+            if (
+                current_distance >=
                 State::QUEEN_MAX_TARGET_DISTANCE
             ) {
                 continue;
             }
 
-
-            // ============================================================
-            // EVALUATE CURRENT TILE
-            // ============================================================
-
-            if (
-                current != here &&
-                !fatal_zone.count(current) &&
-                !queen_safe_zone.count(current) &&
-                !Memory::known_occupied(current)
-            ) {
-                auto exits =
-                    get_physical_neighbors(
-                        current,
-                        round_num
-                    );
-
-                // Queen does NOT care about blocking allies.
-                if (!exits.empty()) {
-
-                    int score = 0;
-
-
-                    // ====================================================
-                    // 1. DISTANCE FROM ALLIES
-                    // ====================================================
-
-                    int nearest_ally_distance =
-                        INT_MAX;
-
-                    for (const auto* part : others) {
-                        if (!part)
-                            continue;
-
-                        if (
-                            part->get_team() !=
-                            unswbc::ct->get_team()
-                        ) {
-                            continue;
-                        }
-
-                        nearest_ally_distance =
-                            std::min(
-                                nearest_ally_distance,
-                                dist(
-                                    current,
-                                    part->get_position()
-                                )
-                            );
-                    }
-
-                    if (
-                        nearest_ally_distance !=
-                        INT_MAX
-                    ) {
-                        score -=
-                            nearest_ally_distance *
-                            ALLY_DISTANCE_WEIGHT;
-                    }
-
-
-                    // ====================================================
-                    // 2. DISTANCE FROM ENEMIES
-                    // ====================================================
-
-                    int nearest_enemy_distance =
-                        INT_MAX;
-
-                    for (const auto* part : others) {
-                        if (!part)
-                            continue;
-
-                        if (
-                            part->get_team() ==
-                            unswbc::ct->get_team()
-                        ) {
-                            continue;
-                        }
-
-                        if (!part->is_head())
-                            continue;
-
-                        nearest_enemy_distance =
-                            std::min(
-                                nearest_enemy_distance,
-                                dist(
-                                    current,
-                                    part->get_position()
-                                )
-                            );
-                    }
-
-                    if (
-                        nearest_enemy_distance !=
-                        INT_MAX
-                    ) {
-                        score +=
-                            nearest_enemy_distance *
-                            ENEMY_DISTANCE_WEIGHT;
-                    }
-
-
-                    // ====================================================
-                    // 3. MOBILITY
-                    // ====================================================
-
-                    score +=
-                        static_cast<int>(
-                            exits.size()
-                        ) *
-                        MOBILITY_WEIGHT;
-
-
-                    // ====================================================
-                    // 4. PEARL BONUS
-                    // ====================================================
-
-                    auto pearl_it =
-                        State::PEARL_MEMORY.find(
-                            current
-                        );
-
-                    if (
-                        pearl_it !=
-                        State::PEARL_MEMORY.end() &&
-                        pearl_it->second.has_pearl
-                    ) {
-                        score +=
-                            PEARL_BONUS;
-                    }
-
-
-                    // ====================================================
-                    // 5. CONVERT SCORE TO TARGET PENALTY
-                    // ====================================================
-
-                    int penalty =
-                        std::max(
-                            1,
-                            TARGET_SCORE_BASE -
-                            score +
-                            current_distance *
-                            PATH_DISTANCE_WEIGHT
-                        );
-
-                    candidates.push_back({
-                        current,
-                        penalty
-                    });
-                }
-            }
-
-
-            // ============================================================
-            // EXPAND ONLY THROUGH KNOWN TERRITORY
-            // ============================================================
-
-            for (
-                const auto& neighbour :
+            for (const auto& neighbour :
                 get_known_neighbors(
                     current,
                     round_num
-                )
-            ) {
+                )) {
+
                 auto next =
                     neighbour.position;
 
                 if (seen.count(next))
                     continue;
 
+                if (Memory::known_occupied(next))
+                    continue;
 
-                // ========================================================
-                // NEVER LEAVE THE QUEEN'S LOCAL RADIUS
-                // ========================================================
+                int next_distance =
+                    current_distance +
+                    neighbour.cost;
 
                 if (
-                    dist(here, next) >
+                    next_distance >
                     State::QUEEN_MAX_TARGET_DISTANCE
                 ) {
                     continue;
                 }
 
-
-                // ========================================================
-                // NEVER EXPAND THROUGH DANGEROUS POSITIONS
-                // ========================================================
-
-                if (
-                    fatal_zone.count(next) ||
-                    queen_safe_zone.count(next)
-                ) {
-                    continue;
-                }
-
-
-                // ========================================================
-                // NEVER EXPAND THROUGH OCCUPIED POSITIONS
-                // ========================================================
-
-                if (
-                    Memory::known_occupied(next)
-                ) {
-                    continue;
-                }
-
-
                 seen.insert(next);
 
                 distance[next] =
-                    current_distance +
-                    neighbour.cost;
+                    next_distance;
 
                 queue.push_back(next);
+            }
+        }
+
+        // ================================================================
+        // DISTANT SAFE-PEARL SEARCH
+        //
+        // We deliberately do NOT perform a general unrestricted BFS here.
+        //
+        // The only thing allowed to escape the queen's local radius is a
+        // pearl that has passed the safe-pearl test.
+        // ================================================================
+
+        std::deque<unswbc::Position> pearl_queue;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > pearl_seen;
+
+        pearl_queue.push_back(here);
+        pearl_seen.insert(here);
+
+        int pearl_expanded = 0;
+
+        while (
+            !pearl_queue.empty() &&
+            pearl_expanded < State::BFS_CAP
+        ) {
+            auto current =
+                pearl_queue.front();
+
+            pearl_queue.pop_front();
+
+            ++pearl_expanded;
+
+            int current_distance =
+                dist(here, current);
+
+            // ------------------------------------------------------------
+            // Only positions outside the normal local radius need to be
+            // considered here. Local pearls were already handled above.
+            // ------------------------------------------------------------
+
+            if (
+                current != here &&
+                current_distance >
+                    State::QUEEN_MAX_TARGET_DISTANCE
+            ) {
+                auto pearl_it =
+                    State::PEARL_MEMORY.find(current);
+
+                bool has_pearl =
+                    pearl_it !=
+                        State::PEARL_MEMORY.end() &&
+                    pearl_it->second.has_pearl;
+
+                if (has_pearl) {
+
+                    // ----------------------------------------------------
+                    // Dead-end check comes before safe-pearl logic.
+                    // ----------------------------------------------------
+
+                    DeadEndResult dead_end =
+                        analyze_dead_end(
+                            current,
+                            here,
+                            round_num
+                        );
+
+                    if (
+                        !dead_end.is_dead_end ||
+                        dead_end.pearl_count >
+                            State::DEAD_END_PEARL_THRESHOLD
+                    ) {
+                        if (
+                            !fatal_zone.count(current) &&
+                            !queen_safe_zone.count(current) &&
+                            !Memory::known_occupied(current) &&
+                            is_safe_queen_pearl(current)
+                        ) {
+                            add_target(
+                                current,
+                                current_distance,
+                                true
+                            );
+                        }
+                    }
+                }
+            }
+
+            // ------------------------------------------------------------
+            // Continue searching known territory for additional pearls.
+            //
+            // This search is ONLY for discovering possible distant pearls;
+            // positions encountered here are never normal queen targets.
+            // ------------------------------------------------------------
+
+            for (const auto& neighbour :
+                get_known_neighbors(
+                    current,
+                    round_num
+                )) {
+
+                auto next =
+                    neighbour.position;
+
+                if (pearl_seen.count(next))
+                    continue;
+
+                if (Memory::known_occupied(next))
+                    continue;
+
+                pearl_seen.insert(next);
+                pearl_queue.push_back(next);
             }
         }
 
