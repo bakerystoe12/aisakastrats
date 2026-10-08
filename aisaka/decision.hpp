@@ -195,15 +195,16 @@ namespace Decision{
     ========================================================*/
 
     bool try_split(const std::vector<unswbc::DragonPart*>& others) {
-        if (State::IS_QUEEN == false && !State::AGGRESSIVE || unswbc::ct->get_length() < State::SPLIT_MIN_LENGTH) {
+        if(State::IS_QUEEN == true){
+            return false; // queen has its own splitting logic now apparently
+        }
+
+        if (!State::AGGRESSIVE || 
+            unswbc::ct->get_length() < State::SPLIT_MIN_LENGTH) {
             return false;
         }
 
         if (State::ENTERED_DEAD_END){
-            return false;
-        }
-
-        if (unswbc::game->get_round_num() > 250 && State::IS_QUEEN){
             return false;
         }
         
@@ -443,6 +444,138 @@ namespace Decision{
         unswbc::ct->make_moves(directions);
     }
 
+
+    /* ===================================================
+            Queen choose move
+    =================================================== */
+
+        bool queen_try_stall_split() {
+            int length = unswbc::ct->get_length();
+
+            if (length < 2 * unswbc::Constants::MIN_SIZE)
+                return false;
+
+            int child = unswbc::Constants::MIN_SIZE;
+
+            if (!unswbc::ct->can_split(child))
+                return false;
+
+            unswbc::ct->do_split(child);
+            return true;
+        }
+
+    void queen_choose_move(
+        const std::vector<unswbc::DragonPart*>& others,
+        int round_num,
+        const std::vector<unswbc::Tile>& tiles,
+        double* deadline
+    ) {
+        unswbc::Position here =
+            unswbc::ct->get_position();
+
+        int moves_this_turn =
+            (unswbc::ct->get_length() + 3) / 4;
+
+        // ================================================================
+        // Opening stall split
+        // ================================================================
+
+        if (round_num < 5) {
+            if (queen_try_stall_split())
+                return;
+        }
+
+        // ================================================================
+        // If completely trapped, try to create space with a split.
+        // ================================================================
+
+        if (!has_available_move(here, tiles)) {
+            if (queen_try_stall_split())
+                return;
+        }
+
+        // ================================================================
+        // Build Queen-specific safety zones.
+        // ================================================================
+
+        auto fatal_zone =
+            Search::build_fatal_zone(others);
+
+        auto queen_safe_zone =
+            Search::build_queen_safe_zone(others);
+
+        // ================================================================
+        // Generate local Queen targets.
+        //
+        // No frontier targets.
+        // No exploration targets.
+        // No separate pearl path.
+        // ================================================================
+
+        auto targets =
+            Search::get_queen_targets(
+                here,
+                others,
+                round_num
+            );
+
+        // ================================================================
+        // Pathfind toward the best Queen target.
+        // ================================================================
+
+        if (!targets.empty()) {
+            auto path =
+                Search::find_valid_path(
+                    here,
+                    targets,
+                    Search::SearchMode::QUEEN,
+                    fatal_zone,
+                    queen_safe_zone,
+                    State::BFS_CAP,
+                    deadline,
+                    round_num,
+                    moves_this_turn,
+                    others
+                );
+
+            if (path.has_value()) {
+                execute_path(
+                    *path,
+                    tiles
+                );
+                return;
+            }
+        }
+
+        // ================================================================
+        // No valid target/path.
+        //
+        // Try to stall in place using the emergency logic.
+        // ================================================================
+
+        auto emergency =
+            Search::choose_emergency_move(
+                here,
+                round_num,
+                others
+            );
+
+        if (emergency.has_value()) {
+            unswbc::ct->make_move(
+                *emergency
+            );
+            return;
+        }
+
+        // ================================================================
+        // Absolute last resort: split if possible.
+        // ================================================================
+
+        if (queen_try_stall_split())
+            return;
+    }
+
+
     /*
         CHOOSE MOVE STRUCTURE:
 
@@ -561,7 +694,8 @@ namespace Decision{
             deadline, 
             round_num, 
             moves_this_turn, 
-            others
+            others,
+            mode
         );
     
         auto frontier_targets =
@@ -598,7 +732,8 @@ namespace Decision{
                 deadline,
                 round_num,
                 moves_this_turn,
-                others
+                others,
+                mode
             );
 
         if (frontier_physical_path.has_value()) {

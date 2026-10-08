@@ -30,6 +30,11 @@ namespace State {
         unswbc::PositionHash
     > EXPLORATION_VISITED;
 
+    // queen constants
+    inline constexpr int QUEEN_SAFE_DANGER_RADIUS = 6;
+    inline constexpr int QUEEN_SAFE_TARGET_CAP = 20;
+    inline constexpr int QUEEN_MAX_TARGET_DISTANCE = 2;
+
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 4;
     inline const int PEARL_SPAWN_HORIZON = 10;
     inline int SPLIT_MIN_LENGTH = 4;

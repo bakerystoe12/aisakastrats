@@ -22,6 +22,7 @@ namespace State {
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;
     inline int SAFE_DANGER_RADIUS = 4;
 
+    bool ENTERED_DEAD_END = false;
     inline constexpr int MAX_FRONTIER_TARGETS = 5;
 
     inline std::unordered_set<

@@ -19,6 +19,7 @@ namespace Search {
 
     const int CLUSTER_RADIUS = 2;
     const int CLUSTER_MIN_SIZE = 6;
+    int DANGER_WEIGHT = 0.1;
 
     /* ===============================================================
         Constructors
@@ -68,16 +69,29 @@ namespace Search {
     /*=============================================================
         Portals handling
     ==============================================================*/
-
-    unswbc::Position portal_exit_position(uint64_t key) {
+    unswbc::Position portal_exit_position(
+        uint64_t key,
+        unswbc::Direction entry_direction
+    ) {
         int x = static_cast<int>(key >> 32);
         int y = static_cast<int>((key >> 1) & 0x7FFFFFFF);
-        return unswbc::Position(x, y);
+
+        unswbc::Position portal_pos(x, y);
+
+        if (entry_direction == unswbc::Direction::EAST ||
+            entry_direction == unswbc::Direction::SOUTH) {
+            return portal_pos;
+        }
+
+        return portal_pos.add_dir(entry_direction);
     }
 
 
-    bool get_portal_destination(unswbc::Position pos, unswbc::Direction d, unswbc::Position& destination) {
-
+    bool get_portal_destination(
+        unswbc::Position pos,
+        unswbc::Direction d,
+        unswbc::Position& destination
+    ) {
         uint64_t key = Memory::edge_key(pos, d);
 
         auto edge_it = State::PORTAL_EDGES.find(key);
@@ -94,8 +108,7 @@ namespace Search {
 
         const auto& endpoints = portal_it->second;
 
-        // We only know where the portal goes if both
-        // ends have been discovered.
+        // We need both ends of the portal pair.
         if (endpoints.size() != 2)
             return false;
 
@@ -103,19 +116,24 @@ namespace Search {
 
         if (endpoints[0] == key)
             other_key = endpoints[1];
-        else
+        else if (endpoints[1] == key)
             other_key = endpoints[0];
+        else
+            return false;
 
-        destination = portal_exit_position(other_key);
+        destination = portal_exit_position(
+            other_key,
+            d
+        );
 
         return true;
-        }
+    }
     
     std::vector<std::pair<unswbc::Direction, int>> portal_directions(unswbc::Position pos, int round_num) {
         std::vector<std::pair<unswbc::Direction, int>> options;
         auto* tile = unswbc::ct->get_tile(pos);
         if (!tile) return options;
-        int cooldown = unswbc::ct->get_length();
+        int cooldown = 0;
         for (auto d : unswbc::Direction::get_direction_list()) {
             auto edge = tile->get_edge(d);
             if (edge.get_edge_type() != unswbc::EdgeType::PORTAL) continue;
@@ -142,12 +160,47 @@ namespace Search {
         return State::KNOWN_EDGES.count(pos) > 0;
     }
 
-    std::optional<unswbc::Position> open_step(unswbc::Position pos, unswbc::Direction d) {
+    std::optional<unswbc::Position> open_step(
+        unswbc::Position pos,
+        unswbc::Direction d
+    ) {
         auto* tile = unswbc::ct->get_tile(pos);
-        if (!tile || tile->get_edge(d).get_edge_type() != unswbc::EdgeType::EMPTY) return std::nullopt;
+
+        if (!tile)
+            return std::nullopt;
+
+        auto edge_type = tile->get_edge(d).get_edge_type();
+
+        // Kelp / blocked edge
+        if (edge_type == unswbc::EdgeType::KELP)
+            return std::nullopt;
+
+        // Portal
+        if (edge_type == unswbc::EdgeType::PORTAL) {
+            unswbc::Position destination;
+
+            if (!get_portal_destination(pos, d, destination))
+                return std::nullopt;
+
+            auto* exit_tile = unswbc::ct->get_tile(destination);
+
+            if (!exit_tile || exit_tile->get_dragon())
+                return std::nullopt;
+
+            return destination;
+        }
+
+        // Normal empty edge
+        if (edge_type != unswbc::EdgeType::EMPTY)
+            return std::nullopt;
+
         unswbc::Position nxt = pos.add_dir(d);
+
         auto* ahead = unswbc::ct->get_tile(nxt);
-        if (!ahead || ahead->get_dragon()) return std::nullopt;
+
+        if (!ahead || ahead->get_dragon())
+            return std::nullopt;
+
         return nxt;
     }
 
@@ -196,6 +249,44 @@ namespace Search {
 
         return result;
     }
+
+    int danger_score(
+        const unswbc::Position& pos,
+        const std::vector<unswbc::DragonPart*>& others
+    ) {
+        int best_distance = INT_MAX;
+
+        const auto my_team =
+            unswbc::ct->get_team();
+
+        for (const auto* part : others) {
+            if (!part)
+                continue;
+
+            if (!part->is_head() ||
+                part->get_team() == my_team) {
+                continue;
+            }
+
+            best_distance = std::min(
+                best_distance,
+                dist(
+                    pos,
+                    part->get_position()
+                )
+            );
+        }
+
+        if (best_distance == INT_MAX)
+            return 0;
+
+        if (best_distance > State::SAFE_DANGER_RADIUS)
+            return 0;
+
+        return State::SAFE_DANGER_RADIUS
+            - best_distance
+            + 1;
+}
 
     std::vector<SearchNeighbor> get_known_neighbors (  // used for search, cant risk on other stuff
         unswbc::Position pos,
@@ -487,7 +578,7 @@ namespace Search {
 
         // 5. Portal cooldown
         if (neighbour.through_portal) {
-            int cooldown = unswbc::ct->get_length();
+            int cooldown = 0;
 
             if (neighbour.portal_id == State::LAST_PORTAL_ID &&
                 round_num - State::LAST_PORTAL_ROUND < cooldown) {
@@ -726,6 +817,7 @@ namespace Search {
     std::optional<PathResult> find_physical_path(
         unswbc::Position here,
         const std::vector<std::pair<unswbc::Position, int>>& targets,
+        const std::vector<unswbc::DragonPart*>& others,
         const std::unordered_set<
             unswbc::Position,
             unswbc::PositionHash
@@ -737,12 +829,47 @@ namespace Search {
         if (targets.empty())
             return std::nullopt;
 
+        /*
+        * Search state.
+        *
+        * sprint_steps tells us how many movement tiles have already
+        * been traversed during the current sprint.
+        *
+        * It is capped at moves_this_turn because danger only applies
+        * to the tiles actually traversed during this turn.
+        */
+        struct PhysicalState {
+            unswbc::Position pos;
+            int sprint_steps;
+
+            bool operator==(const PhysicalState& other) const {
+                return pos == other.pos &&
+                    sprint_steps == other.sprint_steps;
+            }
+        };
+
+        struct PhysicalStateHash {
+            std::size_t operator()(
+                const PhysicalState& state
+            ) const {
+                return unswbc::PositionHash()(state.pos)
+                    ^ (
+                        static_cast<std::size_t>(
+                            state.sprint_steps
+                        ) << 16
+                    );
+            }
+        };
+
+        /*
+        * Parent information for reconstructing the path.
+        */
         struct Parent {
-            unswbc::Position previous;
+            PhysicalState previous;
             unswbc::Direction direction;
 
             Parent(
-                unswbc::Position previous,
+                PhysicalState previous,
                 unswbc::Direction direction
             )
                 : previous(previous),
@@ -750,6 +877,36 @@ namespace Search {
             {}
         };
 
+        /*
+        * Priority queue node.
+        *
+        * score =
+        *     path length
+        *   + weighted sprint danger
+        */
+        struct PhysicalNode {
+            int score;
+            int path_length;
+            int sprint_steps;
+            int counter;
+            unswbc::Position pos;
+
+            bool operator>(
+                const PhysicalNode& other
+            ) const {
+                if (score != other.score)
+                    return score > other.score;
+
+                if (path_length != other.path_length)
+                    return path_length > other.path_length;
+
+                return counter > other.counter;
+            }
+        };
+
+        /*
+        * Preserve the existing target penalty behaviour.
+        */
         std::unordered_map<
             unswbc::Position,
             int,
@@ -757,60 +914,94 @@ namespace Search {
         > target_penalty;
 
         for (const auto& [position, penalty] : targets) {
-            auto it = target_penalty.find(position);
+
+            auto it =
+                target_penalty.find(position);
 
             if (it == target_penalty.end()) {
-                target_penalty[position] = penalty;
-            }
-            else {
-                it->second = std::min(
-                    it->second,
-                    penalty
-                );
+
+                target_penalty[position] =
+                    penalty;
+
+            } else {
+
+                it->second =
+                    std::min(
+                        it->second,
+                        penalty
+                    );
             }
         }
 
+        /*
+        * Number of tiles this dragon actually traverses
+        * during the current turn.
+        */
+        const int moves_this_turn =
+            (unswbc::ct->get_length() + 3) / 4;
+
         std::priority_queue<
-            AStarNode,
-            std::vector<AStarNode>,
-            std::greater<AStarNode>
+            PhysicalNode,
+            std::vector<PhysicalNode>,
+            std::greater<PhysicalNode>
         > open;
 
+        /*
+        * Best score for each
+        * (position, sprint progress) state.
+        */
         std::unordered_map<
-            unswbc::Position,
+            PhysicalState,
             int,
-            unswbc::PositionHash
+            PhysicalStateHash
         > distance;
 
+        /*
+        * Parent map for path reconstruction.
+        */
         std::unordered_map<
-            unswbc::Position,
+            PhysicalState,
             Parent,
-            unswbc::PositionHash
+            PhysicalStateHash
         > came_from;
 
+        /*
+        * States that have already been fully expanded.
+        */
         std::unordered_set<
-            unswbc::Position,
-            unswbc::PositionHash
+            PhysicalState,
+            PhysicalStateHash
         > visited;
 
         int counter = 0;
 
-        distance[here] = 0;
+        PhysicalState start{
+            here,
+            0
+        };
+
+        distance[start] = 0;
 
         open.push({
-            0,
-            0,
+            0,      // score
+            0,      // path_length
+            0,      // sprint_steps
             counter++,
             here
         });
 
         int best_cost = INT_MAX;
 
-        std::vector<unswbc::Position> best_targets;
+        std::optional<PhysicalState>
+            best_target_state;
 
         while (!open.empty()) {
 
+            /*
+            * Time limit.
+            */
             if (deadline != nullptr) {
+
                 double now =
                     std::chrono::duration<double>(
                         std::chrono::steady_clock::now()
@@ -821,42 +1012,98 @@ namespace Search {
                     break;
             }
 
-            AStarNode current = open.top();
+            PhysicalNode current =
+                open.top();
+
             open.pop();
 
-            if (visited.count(current.pos))
+            PhysicalState current_state{
+                current.pos,
+                current.sprint_steps
+            };
+
+            /*
+            * We can reach the same state multiple times through
+            * different queue entries. Only process it once.
+            */
+            if (visited.count(current_state))
                 continue;
 
-            visited.insert(current.pos);
+            visited.insert(current_state);
 
+            /*
+            * Since all future costs are non-negative, once the
+            * current score exceeds our best target score, there
+            * cannot be a better result later in the queue.
+            */
             if (best_cost != INT_MAX &&
-                current.g > best_cost) {
+                current.score > best_cost) {
                 break;
             }
 
+            /*
+            * Check whether this position is a target.
+            */
             auto target_it =
-                target_penalty.find(current.pos);
+                target_penalty.find(
+                    current.pos
+                );
 
             if (target_it != target_penalty.end()) {
 
-                int effective_cost =
+                /*
+                * current.score consists of:
+                *
+                *     path length
+                *   + sprint danger
+                *
+                * Extract the danger component so that the existing
+                * max(path_length, target_penalty) behaviour is kept.
+                */
+                const int sprint_danger_cost =
+                    current.score
+                    - current.path_length;
+
+                const int base_cost =
                     std::max(
-                        current.g,
+                        current.path_length,
                         target_it->second
                     );
 
+                /*
+                * Target danger is evaluated separately.
+                */
+                const int target_danger =
+                    danger_score(
+                        current.pos,
+                        others
+                    );
+
+                const int effective_cost =
+                    base_cost
+                    + sprint_danger_cost
+                    + DANGER_WEIGHT * target_danger;
+
                 if (effective_cost < best_cost) {
-                    best_cost = effective_cost;
-                    best_targets.clear();
-                    best_targets.push_back(current.pos);
-                }
-                else if (effective_cost == best_cost) {
-                    best_targets.push_back(current.pos);
+
+                    best_cost =
+                        effective_cost;
+
+                    best_target_state =
+                        current_state;
                 }
             }
 
-            if (static_cast<int>(visited.size()) >= cap)
+            /*
+            * Search cap.
+            */
+            if (
+                static_cast<int>(
+                    visited.size()
+                ) >= cap
+            ) {
                 break;
+            }
 
             auto neighbours =
                 get_known_neighbors(
@@ -866,71 +1113,149 @@ namespace Search {
 
             for (const auto& neighbour : neighbours) {
 
-                if (Memory::known_occupied(
-                        neighbour.position)) {
-                    continue;
-                }
-
-                // Reject nodes blocked by previous validation attempts.
-                if (blocked.count(neighbour.position))
-                    continue;
-
                 const auto next =
                     neighbour.position;
 
-                if (visited.count(next))
-                    continue;
-
-                const int new_distance =
-                    current.g + neighbour.cost;
-
-                auto distance_it =
-                    distance.find(next);
-
-                if (distance_it != distance.end() &&
-                    new_distance >= distance_it->second) {
+                /*
+                * Physical search still cannot move through
+                * known occupied tiles.
+                */
+                if (
+                    Memory::known_occupied(
+                        next
+                    )
+                ) {
                     continue;
                 }
 
-                distance[next] = new_distance;
+                /*
+                * Don't retry previously rejected nodes.
+                */
+                if (blocked.count(next))
+                    continue;
+
+                /*
+                * Calculate sprint progress.
+                */
+                const int new_sprint_steps =
+                    std::min(
+                        current.sprint_steps
+                            + neighbour.cost,
+                        moves_this_turn
+                    );
+
+                PhysicalState next_state{
+                    next,
+                    new_sprint_steps
+                };
+
+                if (visited.count(next_state))
+                    continue;
+
+                /*
+                * Normal movement cost.
+                */
+                const int new_path_length =
+                    current.path_length
+                    + neighbour.cost;
+
+                int new_score =
+                    current.score
+                    + neighbour.cost;
+
+                /*
+                * Only apply danger while traversing tiles
+                * during the current sprint.
+                *
+                * Once sprint_steps reaches moves_this_turn,
+                * subsequent path tiles don't receive danger cost.
+                */
+                if (
+                    current.sprint_steps
+                    < moves_this_turn
+                ) {
+
+                    new_score +=
+                        DANGER_WEIGHT
+                        * danger_score(
+                            next,
+                            others
+                        );
+                }
+
+                /*
+                * Only keep the best-scoring route to this
+                * particular (position, sprint progress) state.
+                */
+                auto distance_it =
+                    distance.find(
+                        next_state
+                    );
+
+                if (
+                    distance_it != distance.end() &&
+                    new_score >= distance_it->second
+                ) {
+                    continue;
+                }
+
+                distance[next_state] =
+                    new_score;
 
                 came_from.insert_or_assign(
-                    next,
+                    next_state,
                     Parent{
-                        current.pos,
+                        current_state,
                         neighbour.direction
                     }
                 );
 
                 open.push({
-                    new_distance,
-                    new_distance,
+                    new_score,
+                    new_path_length,
+                    new_sprint_steps,
                     counter++,
                     next
                 });
             }
         }
 
-        if (best_targets.empty())
+        /*
+        * No target was reached.
+        */
+        if (!best_target_state.has_value())
             return std::nullopt;
 
-        const auto selected_target =
-            best_targets.front();
-
+        /*
+        * Reconstruct path from the target STATE.
+        *
+        * We cannot reconstruct using only Position because
+        * sprint progress is part of the search state.
+        */
         PathResult result;
 
-        result.target = selected_target;
-        result.cost = best_cost;
+        result.target =
+            best_target_state->pos;
 
-        auto current = selected_target;
+        result.cost =
+            best_cost;
 
-        while (current != here) {
+        PhysicalState current =
+            *best_target_state;
+
+        while (current.pos != here) {
 
             auto parent_it =
-                came_from.find(current);
+                came_from.find(
+                    current
+                );
 
-            if (parent_it == came_from.end())
+            if (
+                parent_it ==
+                came_from.end()
+            ) {
                 return std::nullopt;
+            }
 
             const auto& parent =
                 parent_it->second;
@@ -940,10 +1265,11 @@ namespace Search {
             );
 
             result.positions.push_back(
-                current
+                current.pos
             );
 
-            current = parent.previous;
+            current =
+                parent.previous;
         }
 
         std::reverse(
@@ -1977,6 +2303,7 @@ namespace Search {
             auto path = find_physical_path(
                 here,
                 targets,
+                others,
                 blocked,
                 cap,
                 deadline,
@@ -2008,15 +2335,64 @@ namespace Search {
         return std::nullopt;
     }
     
+    // ============================================================
+    // Emergency move tuning
+    // ============================================================
+
+    const int EMERGENCY_MOBILITY_WEIGHT    = 10;
+    // Bonus for each physical exit from the candidate tile.
+
+    const int EMERGENCY_UNEXPLORED_BONUS   = 5;
+    // Bonus for moving into a tile we have not visited before.
+
+    const int EMERGENCY_DEAD_END_PENALTY   = 50;
+    // Penalty for entering a dead end.
+
+    const int EMERGENCY_PEARL_BONUS        = 25;
+    // Bonus per pearl found inside a dead end.
+
+    const int EMERGENCY_ALLY_BLOCK_PENALTY = 100;
+    // Penalty for blocking an ally.
+
+
+    // ============================================================
+    // Emergency move
+    // ============================================================
+
     std::optional<unswbc::Direction> choose_emergency_move(
         unswbc::Position here,
         int round_num,
         const std::vector<unswbc::DragonPart*>& others
     ) {
-        std::vector<std::pair<
-            unswbc::Direction,
-            unswbc::Position
-        >> candidates;
+        struct Candidate {
+            unswbc::Direction direction;
+            unswbc::Position position;
+
+            bool dead_end;
+            int pearl_count;
+            bool blocks_ally;
+            int mobility;
+            int score;
+
+            Candidate(
+                unswbc::Direction direction,
+                unswbc::Position position
+            )
+                : direction(direction),
+                position(position),
+                dead_end(false),
+                pearl_count(0),
+                blocks_ally(false),
+                mobility(0),
+                score(0)
+            {}
+        };
+
+        std::vector<Candidate> candidates;
+
+        // ========================================================
+        // Generate physically possible candidates
+        // ========================================================
 
         for (const auto& direction :
             unswbc::Direction::get_direction_list()) {
@@ -2029,38 +2405,24 @@ namespace Search {
 
             unswbc::Position next;
 
-            // Normal movement.
+            // ----------------------------------------------------
+            // Normal movement
+            // ----------------------------------------------------
+
             if (edge == unswbc::EdgeType::EMPTY) {
                 next = here.add_dir(direction);
             }
 
-            // Portal movement.
+            // ----------------------------------------------------
+            // Portal movement
+            // ----------------------------------------------------
+
             else if (edge == unswbc::EdgeType::PORTAL) {
+
                 if (!get_portal_destination(
                         here,
                         direction,
                         next)) {
-                    continue;
-                }
-
-                // Respect portal cooldown.
-                auto edge_key =
-                    Memory::edge_key(here, direction);
-
-                auto portal_it =
-                    State::PORTAL_EDGES.find(edge_key);
-
-                if (portal_it == State::PORTAL_EDGES.end())
-                    continue;
-
-                int portal_id = portal_it->second;
-
-                int cooldown =
-                    unswbc::ct->get_length();
-
-                if (portal_id == State::LAST_PORTAL_ID &&
-                    round_num - State::LAST_PORTAL_ROUND <
-                        cooldown) {
                     continue;
                 }
             }
@@ -2069,11 +2431,20 @@ namespace Search {
                 continue;
             }
 
+            // ----------------------------------------------------
+            // Hard constraint:
             // Never move into known occupied space.
+            // ----------------------------------------------------
+
             if (Memory::known_occupied(next))
                 continue;
 
-            // Reject dead ends that aren't worth entering.
+            Candidate candidate(direction, next);
+
+            // ====================================================
+            // Dead-end analysis
+            // ====================================================
+
             DeadEndResult dead_end =
                 analyze_dead_end(
                     next,
@@ -2081,34 +2452,26 @@ namespace Search {
                     round_num
                 );
 
-            if (dead_end.is_dead_end &&
-                dead_end.pearl_count <=
-                    State::DEAD_END_PEARL_THRESHOLD) {
-                continue;
-            }
+            candidate.dead_end =
+                dead_end.is_dead_end;
 
-            // Don't immediately block an ally.
-            if (blocks_ally(
+            candidate.pearl_count =
+                dead_end.pearl_count;
+
+            // ====================================================
+            // Ally blocking
+            // ====================================================
+
+            candidate.blocks_ally =
+                blocks_ally(
                     next,
                     others,
-                    round_num)) {
-                continue;
-            }
+                    round_num
+                );
 
-            candidates.push_back({
-                direction,
-                next
-            });
-        }
-
-        if (candidates.empty())
-            return std::nullopt;
-
-        // Prefer the move that leaves the most physical mobility.
-        int best_score = -1;
-        std::optional<unswbc::Direction> best_move;
-
-        for (const auto& [direction, next] : candidates) {
+            // ====================================================
+            // Physical mobility
+            // ====================================================
 
             auto exits =
                 get_physical_neighbors(
@@ -2116,19 +2479,119 @@ namespace Search {
                     round_num
                 );
 
-            int score =
-                static_cast<int>(exits.size()) * 10;
+            candidate.mobility =
+                static_cast<int>(exits.size());
+
+            // ====================================================
+            // Calculate score
+            // ====================================================
+
+            int score = 0;
+
+            // More exits = more future options.
+            score +=
+                candidate.mobility *
+                EMERGENCY_MOBILITY_WEIGHT;
 
             // Prefer unexplored territory.
-            if (!State::EXPLORATION_VISITED.count(next))
-                score += 5;
+            if (!State::EXPLORATION_VISITED.count(next)) {
+                score += EMERGENCY_UNEXPLORED_BONUS;
+            }
 
-            if (score > best_score) {
-                best_score = score;
-                best_move = direction;
+            // Penalize dead ends.
+            //
+            // Pearls partially offset the penalty because entering
+            // a dead end containing valuable pearls can still be
+            // worthwhile.
+            if (candidate.dead_end) {
+
+                score -=
+                    EMERGENCY_DEAD_END_PENALTY;
+
+                score +=
+                    candidate.pearl_count *
+                    EMERGENCY_PEARL_BONUS;
+            }
+
+            // Penalize blocking an ally.
+            if (candidate.blocks_ally) {
+                score -=
+                    EMERGENCY_ALLY_BLOCK_PENALTY;
+            }
+
+            candidate.score = score;
+
+            candidates.push_back(candidate);
+        }
+
+        // ========================================================
+        // No physically legal moves
+        // ========================================================
+
+        if (candidates.empty())
+            return std::nullopt;
+
+        // ========================================================
+        // Select best candidate
+        // ========================================================
+
+        const Candidate* best = nullptr;
+
+        for (const auto& candidate : candidates) {
+
+            if (best == nullptr) {
+                best = &candidate;
+                continue;
+            }
+
+            // ----------------------------------------------------
+            // Primary: highest score
+            // ----------------------------------------------------
+
+            if (candidate.score > best->score) {
+                best = &candidate;
+                continue;
+            }
+
+            if (candidate.score != best->score)
+                continue;
+
+            // ----------------------------------------------------
+            // Tie-breaker 1:
+            // Prefer non-dead-end.
+            // ----------------------------------------------------
+
+            if (candidate.dead_end != best->dead_end) {
+
+                if (!candidate.dead_end)
+                    best = &candidate;
+
+                continue;
+            }
+
+            // ----------------------------------------------------
+            // Tie-breaker 2:
+            // Prefer not blocking an ally.
+            // ----------------------------------------------------
+
+            if (candidate.blocks_ally != best->blocks_ally) {
+
+                if (!candidate.blocks_ally)
+                    best = &candidate;
+
+                continue;
+            }
+
+            // ----------------------------------------------------
+            // Tie-breaker 3:
+            // Prefer greater mobility.
+            // ----------------------------------------------------
+
+            if (candidate.mobility > best->mobility) {
+                best = &candidate;
             }
         }
 
-        return best_move;
+        return best->direction;
     }
 } // search namespace closer

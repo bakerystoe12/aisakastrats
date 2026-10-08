@@ -83,6 +83,11 @@ void execute_turn() {
     }
     // choose direction theoretically should just do everything now
 
+    if (State::IS_QUEEN){
+        Decision::queen_choose_move(others, round_num, tiles,&deadline);
+        return;
+    }
+
     Decision::choose_move(others, round_num, tiles, &deadline);
 }
 
@@ -108,9 +113,6 @@ int main() {
             }
         
             if (id == 0 || id == 1){
-                State::AGGRESSIVE = false;
-                State::SAFE_DANGER_RADIUS = 5;
-                State::DEAD_END_PEARL_THRESHOLD = 999;
                 State::IS_QUEEN = true;
             }
         }

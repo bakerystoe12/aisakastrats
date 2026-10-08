@@ -160,10 +160,14 @@ namespace Decision{
     ========================================================*/
 
     bool try_split(const std::vector<unswbc::DragonPart*>& others) {
-        if (!State::AGGRESSIVE ||unswbc::ct->get_length() < State::SPLIT_MIN_LENGTH) {
+        if (State::IS_QUEEN == false && !State::AGGRESSIVE || unswbc::ct->get_length() < State::SPLIT_MIN_LENGTH) {
             return false;
         }
 
+        if (unswbc::game->get_round_num() > 100 && State::IS_QUEEN){
+            return false;
+        }
+        
         int length =
             unswbc::ct->get_length();
 
@@ -210,7 +214,6 @@ namespace Decision{
 
         // No suitable pearl targets -> explore
         if (targets.empty()) {
-
             // Normal exploration
             auto frontier_target =
                 Search::nearest_unexplored(
@@ -282,25 +285,75 @@ namespace Decision{
             auto nxt =
                 Search::open_step(here, d);
 
-            if (nxt.has_value()) {
+            if (nxt.has_value() && d != unswbc::ct->get_dir().get_opposite()) {
                 return true;
             }
         }
         return false;
     }
 
-    void execute_path(const Search::PathResult& path) {
+    void execute_path(
+        const Search::PathResult& path,
+        const std::vector<unswbc::Tile>& tiles
+    ) {
         int length = unswbc::ct->get_length();
         int max_moves = (length + 3) / 4;
 
-        int moves = std::min(
-            max_moves,
-            static_cast<int>(path.directions.size())
-        );
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > visible;
 
-        if (moves <= 0){
-            return;
+        for (auto tile : tiles) {
+            visible.insert(tile.get_position());
         }
+
+        int moves = 0;
+
+        unswbc::Position current_position =
+            unswbc::ct->get_position();
+
+        // Only execute moves that are:
+        // 1. within the sprint limit
+        // 2. present in the path
+        // 3. inside current vision, unless the move enters a portal
+        for (int i = 0; i < max_moves; ++i) {
+
+            if (i >= static_cast<int>(path.directions.size()))
+                break;
+
+            if (i >= static_cast<int>(path.positions.size()))
+                break;
+
+            const auto direction = path.directions[i];
+            const auto position = path.positions[i];
+
+            auto edge =
+                Memory::known_edge_type(
+                    current_position,
+                    direction
+                );
+
+            bool through_portal =
+                edge == unswbc::EdgeType::PORTAL;
+
+            // Normal movement must lead to a visible tile.
+            // A portal exit does not need to be visible because
+            // dragons cannot see through portals.
+            if (!through_portal &&
+                !visible.count(position)) {
+                break;
+            }
+
+            ++moves;
+
+            // The next path step starts from this position.
+            // For a portal, this is the portal exit.
+            current_position = position;
+        }
+
+        if (moves <= 0)
+            return;
 
         std::vector<unswbc::Direction> directions(
             path.directions.begin(),
@@ -311,6 +364,11 @@ namespace Decision{
             path.positions.begin(),
             path.positions.begin() + moves
         );
+
+        // --------------------------------------------------------
+        // Check whether we are actually entering a valuable
+        // dead-end pocket during this sprint.
+        // --------------------------------------------------------
 
         Memory::predict_own_body(
             positions,
@@ -395,7 +453,6 @@ namespace Decision{
         double* deadline
     ){  
         unswbc::Position here = unswbc::ct->get_position();
-
         auto targets = get_targets(here,tiles,round_num);
 
         // auto target_positions = get_target_positions(targets);
@@ -428,7 +485,7 @@ namespace Decision{
             others);
         
         if (path.has_value()) { // if it returns a path
-            execute_path(*path);
+            execute_path(*path, tiles);
             return;
         }
 
@@ -440,12 +497,7 @@ namespace Decision{
             moves_this_turn, 
             others
         );
-        
-        if(physical_path.has_value()){
-            execute_path(*physical_path);
-            return;
-        }
-
+    
         auto frontier_targets =
             Search::get_frontier_targets(here, round_num);
 
@@ -463,7 +515,12 @@ namespace Decision{
         );
 
         if (frontier_path.has_value()) {
-            execute_path(*frontier_path);
+            execute_path(*frontier_path, tiles);
+            return;
+        }
+
+        if(physical_path.has_value()){
+            execute_path(*physical_path, tiles);
             return;
         }
 
@@ -479,7 +536,7 @@ namespace Decision{
             );
 
         if (frontier_physical_path.has_value()) {
-            execute_path(*frontier_physical_path);
+            execute_path(*frontier_physical_path, tiles);
             return;
         }
 
@@ -491,15 +548,5 @@ namespace Decision{
             );
             return;
         }
-
-        for (auto d :unswbc::Direction::get_direction_list()) {
-
-            auto nxt =
-                Search::open_step(here, d);
-
-            if (nxt.has_value()) {
-                unswbc::ct->make_move(d);
-            }
-        }
     }
-} // decision closer
+} // decision closer    

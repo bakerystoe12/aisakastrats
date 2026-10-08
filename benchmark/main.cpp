@@ -68,8 +68,9 @@ void execute_turn() {
 
     if (Decision::try_split(others)) return;
     if (Kamikaze::kamikaze_charge(others, deadline)) return;
+    if (Kamikaze::kamikaze_dodge_split(others)) return;
 
-    if (round_num > 400 && !Decision::enemy_nearby(others) && round_num < 490) {
+    if (round_num > 440 && !Decision::enemy_nearby(others) && round_num < 490 && State::IS_QUEEN != true) {
         if (Decision::seppuku_conditions(others)) {
             Decision::suicide_bot();
             return;
@@ -78,6 +79,7 @@ void execute_turn() {
 
     if (round_num > 350){
         Kamikaze::KAMIKAZE_MIN_LENGTH_RATIO = 0;
+        State::SPLIT_MIN_LENGTH = 5;
     }
     // choose direction theoretically should just do everything now
 
@@ -96,19 +98,24 @@ int main() {
 
         if (!rolled) {
             double progress = (round_num - 1) / 500.0;
-            double aggro_chance = std::max(1.0 - 0.5 * progress, 0.2);
+            double aggro_chance = std::max(1.0 - 0.5 * progress, 0.3);
             State::AGGRESSIVE = stable_roll(unswbc::ct->get_id(), aggro_chance);
             rolled = true;
-            if (round_num < 100) State::AGGRESSIVE = true;
+            if (round_num < 200) State::AGGRESSIVE = true;
+
+            if (State::AGGRESSIVE){
+                Search::DANGER_WEIGHT = 0;
+            }
+        
             if (id == 0 || id == 1){
                 State::AGGRESSIVE = false;
-                State::SAFE_DANGER_RADIUS = 2;
+                State::SAFE_DANGER_RADIUS = 5;
                 State::DEAD_END_PEARL_THRESHOLD = 999;
                 State::IS_QUEEN = true;
             }
         }
         
-        if (round_num > 400 && unswbc::ct->get_length() > 6){
+        if (round_num > 50 && unswbc::ct->get_length() > 6){
             State::AGGRESSIVE = false;
         }
 

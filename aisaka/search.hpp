@@ -27,7 +27,8 @@ namespace Search {
 
     enum class SearchMode {
         SAFE,
-        AGGRESSIVE
+        AGGRESSIVE,
+        QUEEN
     };  
 
     struct PathValidationResult {
@@ -581,12 +582,14 @@ namespace Search {
         if (Memory::known_occupied(nxt))
             return false;
 
-        // 3. Hard danger: avoid in both modes
-        if (mode == SearchMode::SAFE && is_fatal(nxt, fatal_zone))
+        // 3. Hard danger: the Queen never enters fatal danger.
+        if ((mode == SearchMode::SAFE || mode == SearchMode::QUEEN) &&
+            is_fatal(nxt, fatal_zone))
             return false;
 
-        // 4. Extra danger radius: avoid only when SAFE
-        if (mode == SearchMode::SAFE &&
+        // 4. Extra danger radius: SAFE and QUEEN avoid their conservative
+        // danger zones.
+        if ((mode == SearchMode::SAFE || mode == SearchMode::QUEEN) &&
             is_fatal(nxt, safe_zone))
             return false;
 
@@ -1305,29 +1308,275 @@ namespace Search {
     }
 
 
-    /* ============================================================
-       PATHFINDING IF WE SEE NO PEARLS: nearest_unexplored
-    =============================================================*/
-
     std::optional<unswbc::Position> nearest_unexplored(
         unswbc::Position start,
         int round_num
     ) {
+        constexpr int LOCAL_SEARCH_DEPTH = 3;
+        constexpr int KELP_PROBE_DISTANCE = 2;
+        constexpr int KELP_TUNNEL_LOOKAHEAD = 3;
+
         struct Node {
             unswbc::Position pos;
             int distance;
         };
 
-        /*
-        * First pass:
-        * Search locally for tiles that we can already see but have
-        * never physically visited.
-        *
-        * Vision radius is 3, so this is intentionally small.
-        * This helps the bot leave spawn quickly when the exit is
-        * already visible.
-        */
-        constexpr int LOCAL_SEARCH_DEPTH = 3;
+        // ================================================================
+        // Check whether a KELP edge borders unexplored territory.
+        //
+        //     KNOWN TILE | KELP | UNKNOWN
+        //
+        // This is the only type of KELP that matters to exploration.
+        // ================================================================
+
+        auto is_kelp_frontier =
+            [&](const unswbc::Position& pos,
+                unswbc::Direction direction) -> bool {
+
+            if (
+                Memory::known_edge_type(
+                    pos,
+                    direction
+                ) != unswbc::EdgeType::KELP
+            ) {
+                return false;
+            }
+
+            auto beyond =
+                pos.add_dir(direction);
+
+            return !tile_ever_seen(beyond);
+        };
+
+
+        // ================================================================
+        // Check whether the KELP is part of a tunnel/corridor.
+        //
+        // For a vertical wall, the wall runs NORTH/SOUTH, so we inspect
+        // NORTH/SOUTH for continued open space.
+        //
+        // For a horizontal wall, the wall runs EAST/WEST, so we inspect
+        // EAST/WEST.
+        //
+        // We look several tiles along the wall. This prevents a single
+        // open tile from making us incorrectly classify a large wall as
+        // a tunnel.
+        // ================================================================
+
+        auto is_kelp_tunnel =
+            [&](const unswbc::Position& pos,
+                unswbc::Direction wall_direction) -> bool {
+
+            bool vertical_wall =
+                wall_direction ==
+                    unswbc::Direction::EAST ||
+                wall_direction ==
+                    unswbc::Direction::WEST;
+
+            unswbc::Direction parallel_a =
+                vertical_wall
+                    ? unswbc::Direction::NORTH
+                    : unswbc::Direction::EAST;
+
+            unswbc::Direction parallel_b =
+                vertical_wall
+                    ? unswbc::Direction::SOUTH
+                    : unswbc::Direction::WEST;
+
+
+            for (auto parallel_direction :
+                {parallel_a, parallel_b}) {
+
+                unswbc::Position current =
+                    pos;
+
+                bool path_exists = true;
+
+                for (int i = 0;
+                    i < KELP_TUNNEL_LOOKAHEAD;
+                    ++i) {
+
+                    if (
+                        Memory::known_edge_type(
+                            current,
+                            parallel_direction
+                        ) != unswbc::EdgeType::EMPTY
+                    ) {
+                        path_exists = false;
+                        break;
+                    }
+
+                    current =
+                        current.add_dir(
+                            parallel_direction
+                        );
+
+                    if (
+                        Memory::known_occupied(
+                            current
+                        )
+                    ) {
+                        path_exists = false;
+                        break;
+                    }
+
+                    if (!tile_ever_seen(current)) {
+                        path_exists = false;
+                        break;
+                    }
+                }
+
+                if (path_exists)
+                    return true;
+            }
+
+            return false;
+        };
+
+
+        // ================================================================
+        // Find a probe position approximately two tiles away from the
+        // KELP wall.
+        //
+        // The probe is perpendicular to the wall.
+        //
+        // Vertical wall:
+        //
+        //     K
+        //     K
+        //     K
+        //
+        //       . . X
+        //
+        // Horizontal wall:
+        //
+        //     K K K K
+        //
+        //       .
+        //       .
+        //       X
+        //
+        // The probe must also have known open space parallel to the wall
+        // so that it can actually investigate the wall rather than being
+        // placed in another dead end.
+        // ================================================================
+
+        auto get_kelp_probe =
+            [&](const unswbc::Position& wall_tile,
+                unswbc::Direction wall_direction)
+                -> std::optional<unswbc::Position> {
+
+            bool vertical_wall =
+                wall_direction ==
+                    unswbc::Direction::EAST ||
+                wall_direction ==
+                    unswbc::Direction::WEST;
+
+
+            // KELP is on this side, so move in the opposite direction.
+            unswbc::Direction away_direction =
+                wall_direction.get_opposite();
+
+
+            unswbc::Position probe =
+                wall_tile;
+
+
+            // ------------------------------------------------------------
+            // Move exactly two tiles away from the wall.
+            // ------------------------------------------------------------
+
+            for (int i = 0;
+                i < KELP_PROBE_DISTANCE;
+                ++i) {
+
+                if (
+                    Memory::known_edge_type(
+                        probe,
+                        away_direction
+                    ) != unswbc::EdgeType::EMPTY
+                ) {
+                    return std::nullopt;
+                }
+
+                probe =
+                    probe.add_dir(
+                        away_direction
+                    );
+
+                if (
+                    Memory::known_occupied(
+                        probe
+                    )
+                ) {
+                    return std::nullopt;
+                }
+            }
+
+
+            // The probe itself must already be known territory.
+            if (!tile_ever_seen(probe))
+                return std::nullopt;
+
+
+            // ------------------------------------------------------------
+            // Determine the directions parallel to the wall.
+            // ------------------------------------------------------------
+
+            unswbc::Direction parallel_a =
+                vertical_wall
+                    ? unswbc::Direction::NORTH
+                    : unswbc::Direction::EAST;
+
+            unswbc::Direction parallel_b =
+                vertical_wall
+                    ? unswbc::Direction::SOUTH
+                    : unswbc::Direction::WEST;
+
+
+            // ------------------------------------------------------------
+            // Make sure the probe has somewhere to move along the wall.
+            // ------------------------------------------------------------
+
+            bool has_parallel_space = false;
+
+            for (auto parallel_direction :
+                {parallel_a, parallel_b}) {
+
+                if (
+                    Memory::known_edge_type(
+                        probe,
+                        parallel_direction
+                    ) != unswbc::EdgeType::EMPTY
+                ) {
+                    continue;
+                }
+
+                auto next =
+                    probe.add_dir(
+                        parallel_direction
+                    );
+
+                if (
+                    tile_ever_seen(next) &&
+                    !Memory::known_occupied(next)
+                ) {
+                    has_parallel_space = true;
+                    break;
+                }
+            }
+
+            if (!has_parallel_space)
+                return std::nullopt;
+
+
+            return probe;
+        };
+
+
+        // ================================================================
+        // LOCAL SEARCH
+        // ================================================================
 
         std::deque<Node> local_queue;
 
@@ -1336,95 +1585,160 @@ namespace Search {
             unswbc::PositionHash
         > local_seen;
 
-        local_queue.push_back({start, 0});
+        local_queue.push_back({
+            start,
+            0
+        });
+
         local_seen.insert(start);
 
-        std::optional<unswbc::Position> best_local_target;
-        int best_local_distance = INT_MAX;
-        int best_local_frontier = -1;
+
+        std::optional<unswbc::Position>
+            best_kelp_probe;
+
+        int best_probe_distance =
+            INT_MAX;
+
 
         while (!local_queue.empty()) {
-            Node current = local_queue.front();
+
+            Node current =
+                local_queue.front();
+
             local_queue.pop_front();
 
-            if (current.distance >= LOCAL_SEARCH_DEPTH)
+
+            if (
+                current.distance >=
+                LOCAL_SEARCH_DEPTH
+            ) {
                 continue;
+            }
+
+
+            // ============================================================
+            // LOOK FOR KELP WALLS BLOCKING UNEXPLORED TERRITORY
+            // ============================================================
+
+            for (auto direction :
+                unswbc::Direction::get_direction_list()) {
+
+                if (
+                    !is_kelp_frontier(
+                        current.pos,
+                        direction
+                    )
+                ) {
+                    continue;
+                }
+
+
+                // --------------------------------------------------------
+                // Don't treat a KELP tunnel like a wall.
+                // --------------------------------------------------------
+
+                if (
+                    is_kelp_tunnel(
+                        current.pos,
+                        direction
+                    )
+                ) {
+                    continue;
+                }
+
+
+                auto probe =
+                    get_kelp_probe(
+                        current.pos,
+                        direction
+                    );
+
+                if (!probe.has_value())
+                    continue;
+
+
+                int probe_distance =
+                    dist(
+                        start,
+                        *probe
+                    );
+
+
+                if (
+                    probe_distance <
+                    best_probe_distance
+                ) {
+                    best_kelp_probe =
+                        probe;
+
+                    best_probe_distance =
+                        probe_distance;
+                }
+            }
+
+
+            // ============================================================
+            // NORMAL LOCAL EXPLORATION
+            // ============================================================
 
             for (const auto& neighbour :
-                get_neighbors(current.pos, round_num)) {
+                get_neighbors(
+                    current.pos,
+                    round_num
+                )) {
 
-                unswbc::Position nxt = neighbour.position;
+                auto nxt =
+                    neighbour.position;
+
 
                 if (local_seen.count(nxt))
                     continue;
 
                 local_seen.insert(nxt);
 
-                if (Memory::known_occupied(nxt))
+
+                if (
+                    Memory::known_occupied(
+                        nxt
+                    )
+                ) {
                     continue;
-
-                int next_distance =
-                    current.distance + neighbour.cost;
-
-                /*
-                * We have never physically visited this tile.
-                *
-                * Score how much unexplored territory surrounds it.
-                * This helps prefer an actual exit/frontier over some
-                * random visible tile sitting in the middle of spawn.
-                */
-                if (!State::EXPLORATION_VISITED.count(nxt)) {
-
-                    int frontier = 0;
-
-                    for (auto direction :
-                        unswbc::Direction::get_direction_list()) {
-
-                        if (Memory::known_edge_type(nxt, direction) ==
-                            unswbc::EdgeType::KELP) {
-                            continue;
-                        }
-
-                        unswbc::Position beyond =
-                            nxt.add_dir(direction);
-
-                        if (Memory::known_occupied(beyond))
-                            continue;
-
-                        // Strong signal: this tile borders genuinely
-                        // unseen territory.
-                        if (!tile_ever_seen(beyond)) {
-                            frontier += 10;
-                        }
-                        // Weaker signal: this tile borders territory
-                        // we still haven't physically visited.
-                        else if (!State::EXPLORATION_VISITED.count(beyond)) {
-                            frontier += 1;
-                        }
-                    }
-
-                    /*
-                    * Prefer:
-                    * 1. Stronger frontier
-                    * 2. Shorter distance
-                    */
-                    if (frontier > best_local_frontier ||
-                        (frontier == best_local_frontier &&
-                        next_distance < best_local_distance)) {
-
-                        best_local_target = nxt;
-                        best_local_frontier = frontier;
-                        best_local_distance = next_distance;
-                    }
                 }
 
-                /*
-                * We can continue searching through known territory.
-                * This means the local search can find a visible exit
-                * even if there are already-visited tiles between us
-                * and it.
-                */
+
+                int next_distance =
+                    current.distance +
+                    neighbour.cost;
+
+
+                // --------------------------------------------------------
+                // Directly reachable unexplored tile.
+                // --------------------------------------------------------
+
+                if (
+                    !State::EXPLORATION_VISITED.count(
+                        nxt
+                    ) &&
+                    !tile_ever_seen(nxt)
+                ) {
+
+                    /*
+                    * If there is no KELP wall requiring investigation,
+                    * immediately use the normal unexplored target.
+                    */
+                    if (!best_kelp_probe.has_value())
+                        return nxt;
+
+                    continue;
+                }
+
+
+                // --------------------------------------------------------
+                // Continue searching through known territory.
+                // --------------------------------------------------------
+
                 if (tile_ever_seen(nxt)) {
+
                     local_queue.push_back({
                         nxt,
                         next_distance
@@ -1433,18 +1747,21 @@ namespace Search {
             }
         }
 
-        /*
-        * If we found a nearby visible-but-unvisited frontier,
-        * use it immediately.
-        */
-        if (best_local_target.has_value())
-            return best_local_target;
 
-        /*
-        * Second pass:
-        * No useful visible frontier nearby, so search more broadly
-        * for genuinely unseen territory.
-        */
+        // ================================================================
+        // KELP WALL PROBE
+        // ================================================================
+
+        if (best_kelp_probe.has_value())
+            return best_kelp_probe;
+
+
+        // ================================================================
+        // BROAD SEARCH
+        //
+        // Same basic behaviour as your original fallback.
+        // ================================================================
+
         std::deque<Node> queue;
 
         std::unordered_set<
@@ -1452,55 +1769,84 @@ namespace Search {
             unswbc::PositionHash
         > seen;
 
-        queue.push_back({start, 0});
+        queue.push_back({
+            start,
+            0
+        });
+
         seen.insert(start);
 
         int expanded = 0;
 
-        while (!queue.empty() &&
-            expanded < State::UNEXPLORED_BFS_CAP) {
 
-            Node current = queue.front();
+        while (
+            !queue.empty() &&
+            expanded <
+                State::UNEXPLORED_BFS_CAP
+        ) {
+
+            Node current =
+                queue.front();
+
             queue.pop_front();
 
             ++expanded;
 
-            for (const auto& neighbour :
-                get_neighbors(current.pos, round_num)) {
 
-                unswbc::Position nxt = neighbour.position;
+            for (const auto& neighbour :
+                get_neighbors(
+                    current.pos,
+                    round_num
+                )) {
+
+                auto nxt =
+                    neighbour.position;
+
 
                 if (seen.count(nxt))
                     continue;
 
                 seen.insert(nxt);
 
-                if (Memory::known_occupied(nxt))
-                    continue;
 
-                /*
-                * Never select territory we have already physically
-                * explored.
-                */
-                if (State::EXPLORATION_VISITED.count(nxt))
+                if (
+                    Memory::known_occupied(
+                        nxt
+                    )
+                ) {
                     continue;
+                }
 
-                /*
-                * Completely unseen tile.
-                */
-                if (!tile_ever_seen(nxt))
+
+                // --------------------------------------------------------
+                // Normal unexplored territory.
+                // --------------------------------------------------------
+
+                if (
+                    !State::EXPLORATION_VISITED.count(
+                        nxt
+                    ) &&
+                    !tile_ever_seen(nxt)
+                ) {
                     return nxt;
+                }
 
-                /*
-                * We know this tile, so it is safe to search through it
-                * to reach other unexplored territory.
-                */
-                queue.push_back({
-                    nxt,
-                    current.distance + neighbour.cost
-                });
+
+                // --------------------------------------------------------
+                // Continue through known territory.
+                // --------------------------------------------------------
+
+                if (tile_ever_seen(nxt)) {
+
+                    queue.push_back({
+                        nxt,
+                        current.distance +
+                        neighbour.cost
+                    });
+                }
             }
         }
+
 
         return std::nullopt;
     }
@@ -2118,7 +2464,8 @@ namespace Search {
         const PathResult& path,
         int moves_this_turn,
         int round_num,
-        const std::vector<unswbc::DragonPart*>& others
+        const std::vector<unswbc::DragonPart*>& others,
+        SearchMode mode
     ) {
         // Nothing to validate.
         if (path.positions.empty())
@@ -2155,14 +2502,28 @@ namespace Search {
                     round_num
                 );
 
-            if (dead_end.is_dead_end &&
-                dead_end.pearl_count <=
-                    State::DEAD_END_PEARL_THRESHOLD) {
+            // The Queen must NEVER enter an analysed dead end, even if
+            // that dead end contains Pearls. Normal dragons keep the
+            // existing Pearl-based exception.
+            if (mode == SearchMode::QUEEN) {
+                if (dead_end.is_dead_end) {
+                    return {
+                        false,
+                        node
+                    };
+                }
+            } else {
+                int dead_end_threshold =
+                    State::DEAD_END_PEARL_THRESHOLD;
 
-                return {
-                    false,
-                    node
-                };
+                if (dead_end.is_dead_end &&
+                    dead_end.pearl_count <= dead_end_threshold) {
+
+                    return {
+                        false,
+                        node
+                    };
+                }
             }
 
             // ---------------------------------------------------------------
@@ -2263,7 +2624,8 @@ namespace Search {
                     *path,
                     moves_this_turn,
                     round_num,
-                    others
+                    others,
+                    mode
                 );
             
             // ---------------------------------------------------------------
@@ -2299,7 +2661,8 @@ namespace Search {
         double* deadline,
         int round_num,
         int moves_this_turn,
-        const std::vector<unswbc::DragonPart*>& others
+        const std::vector<unswbc::DragonPart*>& others,
+        SearchMode mode
     ) {
         std::unordered_set<
             unswbc::Position,
@@ -2337,7 +2700,8 @@ namespace Search {
                     *path,
                     moves_this_turn,
                     round_num,
-                    others
+                    others,
+                    mode
                 );
 
             if (validation.valid)
@@ -2612,5 +2976,349 @@ namespace Search {
         }
 
         return best->direction;
+    }
+
+
+    /* ============================================
+    queen logic
+    ============================================ */
+    std::unordered_set<
+        unswbc::Position,
+        unswbc::PositionHash
+    > build_queen_safe_zone(const std::vector<unswbc::DragonPart*>& others) {
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > zone;
+
+        unswbc::Team my_team = unswbc::ct->get_team();
+
+        for (auto part : others) {
+            if (!part->is_head() || part->get_team() == my_team)
+                continue;
+
+            unswbc::Position enemy = part->get_position();
+            zone.insert(enemy);
+
+            for (int dx = -State::QUEEN_SAFE_DANGER_RADIUS;
+                dx <= State::QUEEN_SAFE_DANGER_RADIUS;
+                ++dx) {
+
+                for (int dy = -State::QUEEN_SAFE_DANGER_RADIUS;
+                    dy <= State::QUEEN_SAFE_DANGER_RADIUS;
+                    ++dy) {
+
+                    if (std::abs(dx) + std::abs(dy)
+                        > State::QUEEN_SAFE_DANGER_RADIUS)
+                        continue;
+
+                    unswbc::Position p(
+                        (enemy.x + dx + State::WIDTH) % State::WIDTH,
+                        (enemy.y + dy + State::HEIGHT) % State::HEIGHT
+                    );
+
+                    zone.insert(p);
+                }
+            }
+        }
+
+        return zone;
+    }
+
+    std::vector<std::pair<unswbc::Position, int>> get_queen_targets(
+        unswbc::Position here,
+        const std::vector<unswbc::DragonPart*>& others,
+        int round_num
+    ) {
+        // ================================================================
+        // QUEEN TARGET WEIGHTS
+        // ================================================================
+
+        constexpr int ALLY_DISTANCE_WEIGHT  = -5;
+        constexpr int ENEMY_DISTANCE_WEIGHT = 25;
+        constexpr int MOBILITY_WEIGHT       = 5;
+        constexpr int PEARL_BONUS           = 20;
+
+        constexpr int PATH_DISTANCE_WEIGHT  = 1;
+        constexpr int TARGET_SCORE_BASE     = 100;
+
+
+        // ================================================================
+        // SAFETY ZONES
+        // ================================================================
+
+        std::vector<std::pair<unswbc::Position, int>> candidates;
+
+        auto fatal_zone =
+            build_fatal_zone(others);
+
+        auto queen_safe_zone =
+            build_queen_safe_zone(others);
+
+
+        // ================================================================
+        // LOCAL BFS
+        // ================================================================
+
+        std::deque<unswbc::Position> queue;
+
+        std::unordered_map<
+            unswbc::Position,
+            int,
+            unswbc::PositionHash
+        > distance;
+
+        std::unordered_set<
+            unswbc::Position,
+            unswbc::PositionHash
+        > seen;
+
+        queue.push_back(here);
+        distance[here] = 0;
+        seen.insert(here);
+
+
+        while (
+            !queue.empty() &&
+            static_cast<int>(seen.size()) <
+                State::QUEEN_SAFE_TARGET_CAP
+        ) {
+            auto current =
+                queue.front();
+
+            queue.pop_front();
+
+            int current_distance =
+                distance[current];
+
+
+            // ============================================================
+            // QUEEN LOCAL RADIUS
+            // ============================================================
+
+            if (
+                dist(here, current) >
+                State::QUEEN_MAX_TARGET_DISTANCE
+            ) {
+                continue;
+            }
+
+
+            // ============================================================
+            // EVALUATE CURRENT TILE
+            // ============================================================
+
+            if (
+                current != here &&
+                !fatal_zone.count(current) &&
+                !queen_safe_zone.count(current) &&
+                !Memory::known_occupied(current)
+            ) {
+                auto exits =
+                    get_physical_neighbors(
+                        current,
+                        round_num
+                    );
+
+                // Queen does NOT care about blocking allies.
+                if (!exits.empty()) {
+
+                    int score = 0;
+
+
+                    // ====================================================
+                    // 1. DISTANCE FROM ALLIES
+                    // ====================================================
+
+                    int nearest_ally_distance =
+                        INT_MAX;
+
+                    for (const auto* part : others) {
+                        if (!part)
+                            continue;
+
+                        if (
+                            part->get_team() !=
+                            unswbc::ct->get_team()
+                        ) {
+                            continue;
+                        }
+
+                        nearest_ally_distance =
+                            std::min(
+                                nearest_ally_distance,
+                                dist(
+                                    current,
+                                    part->get_position()
+                                )
+                            );
+                    }
+
+                    if (
+                        nearest_ally_distance !=
+                        INT_MAX
+                    ) {
+                        score -=
+                            nearest_ally_distance *
+                            ALLY_DISTANCE_WEIGHT;
+                    }
+
+
+                    // ====================================================
+                    // 2. DISTANCE FROM ENEMIES
+                    // ====================================================
+
+                    int nearest_enemy_distance =
+                        INT_MAX;
+
+                    for (const auto* part : others) {
+                        if (!part)
+                            continue;
+
+                        if (
+                            part->get_team() ==
+                            unswbc::ct->get_team()
+                        ) {
+                            continue;
+                        }
+
+                        if (!part->is_head())
+                            continue;
+
+                        nearest_enemy_distance =
+                            std::min(
+                                nearest_enemy_distance,
+                                dist(
+                                    current,
+                                    part->get_position()
+                                )
+                            );
+                    }
+
+                    if (
+                        nearest_enemy_distance !=
+                        INT_MAX
+                    ) {
+                        score +=
+                            nearest_enemy_distance *
+                            ENEMY_DISTANCE_WEIGHT;
+                    }
+
+
+                    // ====================================================
+                    // 3. MOBILITY
+                    // ====================================================
+
+                    score +=
+                        static_cast<int>(
+                            exits.size()
+                        ) *
+                        MOBILITY_WEIGHT;
+
+
+                    // ====================================================
+                    // 4. PEARL BONUS
+                    // ====================================================
+
+                    auto pearl_it =
+                        State::PEARL_MEMORY.find(
+                            current
+                        );
+
+                    if (
+                        pearl_it !=
+                        State::PEARL_MEMORY.end() &&
+                        pearl_it->second.has_pearl
+                    ) {
+                        score +=
+                            PEARL_BONUS;
+                    }
+
+
+                    // ====================================================
+                    // 5. CONVERT SCORE TO TARGET PENALTY
+                    // ====================================================
+
+                    int penalty =
+                        std::max(
+                            1,
+                            TARGET_SCORE_BASE -
+                            score +
+                            current_distance *
+                            PATH_DISTANCE_WEIGHT
+                        );
+
+                    candidates.push_back({
+                        current,
+                        penalty
+                    });
+                }
+            }
+
+
+            // ============================================================
+            // EXPAND ONLY THROUGH KNOWN TERRITORY
+            // ============================================================
+
+            for (
+                const auto& neighbour :
+                get_known_neighbors(
+                    current,
+                    round_num
+                )
+            ) {
+                auto next =
+                    neighbour.position;
+
+                if (seen.count(next))
+                    continue;
+
+
+                // ========================================================
+                // NEVER LEAVE THE QUEEN'S LOCAL RADIUS
+                // ========================================================
+
+                if (
+                    dist(here, next) >
+                    State::QUEEN_MAX_TARGET_DISTANCE
+                ) {
+                    continue;
+                }
+
+
+                // ========================================================
+                // NEVER EXPAND THROUGH DANGEROUS POSITIONS
+                // ========================================================
+
+                if (
+                    fatal_zone.count(next) ||
+                    queen_safe_zone.count(next)
+                ) {
+                    continue;
+                }
+
+
+                // ========================================================
+                // NEVER EXPAND THROUGH OCCUPIED POSITIONS
+                // ========================================================
+
+                if (
+                    Memory::known_occupied(next)
+                ) {
+                    continue;
+                }
+
+
+                seen.insert(next);
+
+                distance[next] =
+                    current_distance +
+                    neighbour.cost;
+
+                queue.push_back(next);
+            }
+        }
+
+        return candidates;
     }
 } // search namespace closer

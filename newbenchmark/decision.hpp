@@ -106,11 +106,46 @@ namespace Decision{
         bool kamikaze = false;
 
         auto portals = Search::portal_directions(here, round_num);
+            if(!portals.empty()){
+                for (const auto& portal : portals) {
 
-        if (!portals.empty()){
-            Memory::remember_portal_crossing(portals[0].second, round_num);
-            unswbc::ct->make_move(portals[0].first);
-            return;
+                    auto direction = portal.first;
+                    auto portal_id = portal.second;
+
+                    unswbc::Position destination;
+
+                    if (!Search::get_portal_destination(
+                            here,
+                            direction,
+                            destination)) {
+                        continue;
+                    }
+
+                    // SAFE dragons do not gamble on unexplored portal exits.
+                    if (!State::AGGRESSIVE &&
+                        !Search::safe_portal_exit_known(destination)) {
+                        continue;
+                    }
+
+                    // If we already know the portal exit is an instant-death
+                    // position, never enter it.
+                    auto exits =
+                        Search::get_physical_neighbors(
+                            destination,
+                            round_num
+                        );
+
+                    if (exits.empty())
+                        continue;
+
+                    Memory::remember_portal_crossing(
+                        portal_id,
+                        round_num
+                    );
+
+                    unswbc::ct->make_move(direction);
+                    return;
+            }
         }
 
 
@@ -164,7 +199,11 @@ namespace Decision{
             return false;
         }
 
-        if (unswbc::game->get_round_num() > 100 && State::IS_QUEEN){
+        if (State::ENTERED_DEAD_END){
+            return false;
+        }
+
+        if (unswbc::game->get_round_num() > 250 && State::IS_QUEEN){
             return false;
         }
         
@@ -278,19 +317,19 @@ namespace Decision{
         return target_positions;
     }
 
-    bool has_available_move(unswbc::Position here, const std::vector<unswbc::Tile>& tiles){
-        for (auto d :
-            unswbc::Direction::get_direction_list()) {
+        bool has_available_move(unswbc::Position here, const std::vector<unswbc::Tile>& tiles){
+            for (auto d :
+                unswbc::Direction::get_direction_list()) {
 
-            auto nxt =
-                Search::open_step(here, d);
+                auto nxt =
+                    Search::open_step(here, d);
 
-            if (nxt.has_value() && d != unswbc::ct->get_dir().get_opposite()) {
-                return true;
+                if (nxt.has_value() && d != unswbc::ct->get_dir().get_opposite()) {
+                    return true;
+                }
             }
+            return false;
         }
-        return false;
-    }
 
     void execute_path(
         const Search::PathResult& path,
@@ -369,6 +408,32 @@ namespace Decision{
         // Check whether we are actually entering a valuable
         // dead-end pocket during this sprint.
         // --------------------------------------------------------
+
+        if (!State::ENTERED_DEAD_END) {
+
+            unswbc::Position previous =
+                unswbc::ct->get_position();
+
+            for (const auto& position : positions) {
+
+                auto dead_end =
+                    Search::analyze_dead_end(
+                        position,
+                        previous,
+                        unswbc::game->get_round_num()
+                    );
+
+                if (dead_end.is_dead_end &&
+                    dead_end.pearl_count >
+                        State::DEAD_END_PEARL_THRESHOLD) {
+
+                    State::ENTERED_DEAD_END = true;
+                    break;
+                }
+
+                previous = position;
+            }
+        }
 
         Memory::predict_own_body(
             positions,
@@ -458,6 +523,7 @@ namespace Decision{
         // auto target_positions = get_target_positions(targets);
 
         if (!has_available_move(here, tiles)){
+            unswbc::ct->output_log("triggered last resort");
             last_resort(round_num, others);
             return;
         } 
@@ -547,6 +613,16 @@ namespace Decision{
                 *emergency
             );
             return;
+        }
+
+        for (auto d :unswbc::Direction::get_direction_list()) {
+
+            auto nxt =
+                Search::open_step(here, d);
+
+            if (nxt.has_value()) {
+                unswbc::ct->make_move(d);
+            }
         }
     }
 } // decision closer    

@@ -42,6 +42,10 @@ namespace Kamikaze {
         if (target->get_id() == 0 || target->get_id() == 1){   // if queen we kill
             return true;
         }
+        
+        if (State::AGGRESSIVE == false){
+            return false;
+        }
 
         return their_visible >= our_length * KAMIKAZE_MIN_LENGTH_RATIO;
     }
@@ -113,7 +117,6 @@ namespace Kamikaze {
     }
 
     bool kamikaze_charge(const std::vector<unswbc::DragonPart*>& others, double deadline) {
-        if (!State::AGGRESSIVE) return false;
         auto* target = nearest_enemy_head(others);
         if (!target || !trade_is_favorable(target, others)) return false;
 
@@ -159,7 +162,7 @@ namespace Kamikaze {
     }
 
     bool kamikaze_dodge_split(const std::vector<unswbc::DragonPart*>& others) {
-        if (State::AGGRESSIVE) return false;
+        if (State::AGGRESSIVE || State::IS_QUEEN) return false;
         if (!kamikaze_threat(others)) return false;
         int child = std::max(2, unswbc::ct->get_length() - 2);
         if (unswbc::ct->can_split(child)) {

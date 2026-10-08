@@ -16,11 +16,11 @@ namespace State {
     inline bool AGGRESSIVE = true;
     inline bool IS_QUEEN = false;
 
-    inline const int BFS_CAP = 1000;
+    inline const int BFS_CAP = 1500;
     inline const int UNEXPLORED_BFS_CAP = 500;
     inline const double TURN_TIME_BUDGET = 0.75;
     inline const int BFS_DEADLINE_CHECK_EVERY = 5;
-    inline int SAFE_DANGER_RADIUS = 2;
+    inline int SAFE_DANGER_RADIUS = 4;
 
     inline constexpr int MAX_FRONTIER_TARGETS = 5;
 
@@ -31,9 +31,9 @@ namespace State {
 
     inline const int MAX_NEARBY_ALLIES_TO_SPLIT = 4;
     inline const int PEARL_SPAWN_HORIZON = 10;
-    inline const int SPLIT_MIN_LENGTH = 4;
+    inline int SPLIT_MIN_LENGTH = 4;
 
-    inline constexpr int DEAD_END_LOOKAHEAD = 16;
+    inline constexpr int DEAD_END_LOOKAHEAD = 64;
     inline int DEAD_END_PEARL_THRESHOLD = 2;
 
     inline std::deque<unswbc::Position> OWN_BODY;
